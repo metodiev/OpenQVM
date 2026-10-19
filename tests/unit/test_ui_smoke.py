@@ -103,3 +103,111 @@ def test_nic_dialog_roundtrips_port_forwards(tmp_path, qapp):
             qapp.processEvents()
     finally:
         context.close()
+
+def _wait_until(qapp, predicate, timeout: float = 10.0) -> bool:
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        qapp.processEvents()
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
+@pytest.mark.gui
+def test_async_runner_cancels_a_running_task(qapp):
+    import threading
+
+    from openqvm.core.errors import ErrorCode, OpenQVMError
+    from openqvm.ui.async_ops import AsyncRunner
+
+    runner = AsyncRunner()
+    busy: list[tuple[bool, str]] = []
+    runner.busy_changed.connect(lambda flag, text: busy.append((flag, text)))
+    errors: list[OpenQVMError] = []
+    started = threading.Event()
+
+    def work(token):
+        started.set()
+        token.sleep(30)
+        token.raise_if_cancelled()
+        return "finished"
+
+    runner.submit("Long task", work, on_error=errors.append)
+    try:
+        assert started.wait(5)
+        assert runner.active_descriptions == ["Long task"]
+        assert runner.cancel_active() == 1
+        assert _wait_until(qapp, lambda: runner.active_count == 0)
+        assert [error.code for error in errors] == [ErrorCode.CANCELLED]
+        assert busy[-1] == (False, "")
+        assert runner.cancel_active() == 0
+    finally:
+        runner.wait_for_done(5000)
+
+
+@pytest.mark.gui
+def test_main_window_cancel_button_stops_the_operation(tmp_path, qapp):
+    import threading
+
+    from openqvm.ui.main_window import MainWindow
+
+    context = AppContext.create(data_dir=tmp_path / "data")
+    window = MainWindow(context)
+    started = threading.Event()
+
+    def work(token):
+        started.set()
+        token.sleep(30)
+        token.raise_if_cancelled()
+        return "done"
+
+    try:
+        window._run("Long task", work)
+        assert started.wait(5)
+        assert _wait_until(qapp, lambda: not window.cancel_button.isHidden())
+        assert window.status_message.text() == "Long task"
+
+        window.cancel_button.click()
+        assert window.status_message.text() == "Cancelling…"
+
+        assert _wait_until(qapp, lambda: window.runner.active_count == 0)
+        assert _wait_until(qapp, lambda: window.status_message.text() == "The operation was cancelled.")
+        assert window.cancel_button.isHidden()
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+        context.close()
+
+@pytest.mark.gui
+def test_wizard_cancel_stops_the_creation_instead_of_closing(tmp_path, qapp):
+    from openqvm.core.errors import CancelledError
+    from openqvm.ui.pages.wizard import CreateVmWizard
+
+    context = AppContext.create(data_dir=tmp_path / "data")
+    wizard = CreateVmWizard(context)
+    try:
+        wizard.page(0).name_edit.setText("Cancel Test VM")
+        events: list[str] = []
+        wizard.create_requested.connect(lambda _spec: events.append("create"))
+        wizard.cancel_requested.connect(lambda: events.append("cancel"))
+
+        wizard.accept()
+        assert events == ["create"]
+        assert wizard._submitted
+
+        wizard.reject()
+        assert events == ["create", "cancel"]
+        assert wizard._submitted, "the dialog stays open until the cancellation is confirmed"
+
+        wizard.creation_failed(CancelledError("The operation was cancelled."))
+        assert not wizard._submitted
+        wizard.reject()
+    finally:
+        wizard.close()
+        wizard.deleteLater()
+        qapp.processEvents()
+        context.close()

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from openqvm.core.cancellation import CancellationToken
 from openqvm.core.errors import (
     BackendUnavailableError,
+    CancelledError,
     ConflictError,
     CorruptDataError,
     OperationFailedError,
@@ -70,8 +71,17 @@ class DiskManager:
 
         return self._require_tool()
 
-    def _run(self, args: list[str], *, timeout: float = 300.0, operation: str) -> ToolResult:
-        result = run_tool([str(self._require_tool()), *args], timeout=timeout, tool_name="qemu-img")
+    def _run(
+        self,
+        args: list[str],
+        *,
+        timeout: float = 300.0,
+        operation: str,
+        cancel: CancellationToken | None = None,
+    ) -> ToolResult:
+        result = run_tool(
+            [str(self._require_tool()), *args], timeout=timeout, tool_name="qemu-img", cancel=cancel
+        )
         if not result.ok:
             raise OperationFailedError(
                 f"The disk operation '{operation}' failed.",
@@ -80,8 +90,12 @@ class DiskManager:
             )
         return result
 
-    def create(self, path: Path, disk: DiskSpec, *, overwrite: bool = False) -> DiskInfo:
+    def create(
+        self, path: Path, disk: DiskSpec, *, overwrite: bool = False, cancel: CancellationToken | None = None
+    ) -> DiskInfo:
         path = Path(path)
+        if cancel is not None:
+            cancel.raise_if_cancelled("Disk creation was cancelled.")
         if path.exists() and not overwrite:
             raise ConflictError(
                 f"The disk file already exists: {path.name}",
@@ -92,7 +106,11 @@ class DiskManager:
         if disk.preallocated:
             args.extend(["-o", "preallocation=full"])
         args.extend([str(path), str(disk.size_bytes)])
-        self._run(args, operation="create")
+        try:
+            self._run(args, operation="create", cancel=cancel)
+        except CancelledError:
+            path.unlink(missing_ok=True)
+            raise
         info = self.info(path)
         if info.format != disk.format.value:
             raise OperationFailedError(
@@ -128,8 +146,15 @@ class DiskManager:
             snapshots=tuple(name for name in snapshots if name),
         )
 
-    def check(self, path: Path, *, timeout: float = 1800.0) -> DiskCheckResult:
-        result = run_tool([str(self._require_tool()), "check", str(path)], timeout=timeout, tool_name="qemu-img")
+    def check(
+        self, path: Path, *, timeout: float = 1800.0, cancel: CancellationToken | None = None
+    ) -> DiskCheckResult:
+        result = run_tool(
+            [str(self._require_tool()), "check", str(path)],
+            timeout=timeout,
+            tool_name="qemu-img",
+            cancel=cancel,
+        )
         output = result.output_tail
         # qemu-img check uses exit code 3 when corruption was found but repaired.
         if result.returncode not in (0, 3):
@@ -139,7 +164,9 @@ class DiskManager:
             )
         return DiskCheckResult(path=path, ok=result.returncode == 0, output=output)
 
-    def resize(self, path: Path, disk: DiskSpec, new_size_bytes: int) -> DiskInfo:
+    def resize(
+        self, path: Path, disk: DiskSpec, new_size_bytes: int, *, cancel: CancellationToken | None = None
+    ) -> DiskInfo:
         issues = validate_disk_resize(disk, new_size_bytes)
         if issues:
             raise ValidationError("The new disk size is not valid.", issues=issues)
@@ -149,7 +176,7 @@ class DiskManager:
                 "Disks with a backing file cannot be resized.",
                 hint="Remove the snapshot chain before resizing.",
             )
-        self._run(["resize", str(path), str(new_size_bytes)], operation="resize")
+        self._run(["resize", str(path), str(new_size_bytes)], operation="resize", cancel=cancel)
         resized = self.info(path)
         if resized.virtual_size != new_size_bytes:
             raise OperationFailedError(
@@ -165,6 +192,7 @@ class DiskManager:
         *,
         target_format: DiskFormat = DiskFormat.QCOW2,
         preallocated: bool = False,
+        cancel: CancellationToken | None = None,
     ) -> DiskInfo:
         if Path(source).resolve() == Path(destination).resolve():
             raise ValidationError("The source and destination disk must be different files.")
@@ -175,7 +203,11 @@ class DiskManager:
         if preallocated and target_format is DiskFormat.QCOW2:
             args.extend(["-o", "preallocation=full"])
         args.extend([str(source), str(destination)])
-        self._run(args, operation="convert", timeout=24 * 60 * 60)
+        try:
+            self._run(args, operation="convert", timeout=24 * 60 * 60, cancel=cancel)
+        except CancelledError:
+            Path(destination).unlink(missing_ok=True)
+            raise
         info = self.info(destination)
         if info.format != target_format.value:
             raise OperationFailedError(
@@ -184,15 +216,27 @@ class DiskManager:
             )
         return info
 
-    def copy(self, source: Path, destination: Path) -> None:
-        """Byte-for-byte copy used for exports (preserves internal snapshots)."""
+    def copy(self, source: Path, destination: Path, *, cancel: CancellationToken | None = None) -> None:
+        """Chunked copy used for exports; cancellation removes the partial file."""
 
         if Path(destination).exists():
             raise ConflictError(f"The destination file already exists: {Path(destination).name}")
         Path(destination).parent.mkdir(parents=True, exist_ok=True)
+        chunk_size = 4 * 1024 * 1024
         try:
-            shutil.copyfile(source, destination)
+            with Path(source).open("rb") as src, Path(destination).open("wb") as dst:
+                while True:
+                    if cancel is not None:
+                        cancel.raise_if_cancelled("The disk copy was cancelled.")
+                    chunk = src.read(chunk_size)
+                    if not chunk:
+                        break
+                    dst.write(chunk)
+        except CancelledError:
+            Path(destination).unlink(missing_ok=True)
+            raise
         except OSError as exc:
+            Path(destination).unlink(missing_ok=True)
             raise OperationFailedError(
                 "The disk could not be copied.",
                 hint="Check free disk space and file permissions.",

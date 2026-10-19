@@ -6,9 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from openqvm.core.errors import ConflictError, InvalidStateError, ValidationError
+from openqvm.core.cancellation import CancellationToken, cancelled_token
+from openqvm.core.errors import CancelledError, ConflictError, InvalidStateError, ValidationError
 from openqvm.core.factory import create_vm_spec
-from openqvm.core.models import GuestOS, VMStatus
+from openqvm.core.ids import new_id
+from openqvm.core.models import DiskSpec, GuestOS, VMStatus
 from openqvm.core.paths import AppPaths
 from openqvm.core.validation import HostResources
 from openqvm.platform.capabilities import AcceleratorInfo, PlatformCapabilities
@@ -24,8 +26,13 @@ class FakeDisks:
     def __init__(self) -> None:
         self.files: dict[str, bytes] = {}
         self.check_failures: set[str] = set()
+        self.on_create = None  # callable(path, disk, cancel) invoked before each disk is written
 
-    def create(self, path, disk, *, overwrite: bool = False):
+    def create(self, path, disk, *, overwrite: bool = False, cancel=None):
+        if cancel is not None:
+            cancel.raise_if_cancelled("Disk creation was cancelled.")
+        if self.on_create is not None:
+            self.on_create(path, disk, cancel)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"fake qcow2")
         self.files[str(path)] = b"fake qcow2"
@@ -34,15 +41,17 @@ class FakeDisks:
     def info(self, path):
         return DiskInfo(path, "qcow2", 20 * 1024**3, 1024, None)
 
-    def resize(self, path, disk, new_size):
+    def resize(self, path, disk, new_size, *, cancel=None):
         return DiskInfo(path, "qcow2", new_size, 2048, None)
 
     def delete(self, path):
         Path(path).unlink(missing_ok=True)
 
-    def check(self, path, timeout: float = 1800.0):
+    def check(self, path, *, timeout: float = 1800.0, cancel=None):
         from openqvm.storage.disks import DiskCheckResult
 
+        if cancel is not None:
+            cancel.raise_if_cancelled("The disk check was cancelled.")
         if path.name in self.check_failures:
             return DiskCheckResult(path=path, ok=False, output="ERROR: image is corrupt")
         return DiskCheckResult(path=path, ok=True, output="No errors were found.")
@@ -328,3 +337,99 @@ def test_offline_iso_change_still_works(manager, tmp_path):
     assert ejected.cdrom_iso is None
     assert all(device.value != "cdrom" for device in ejected.boot_order)
     assert manager.backend.medium_changes == []
+
+# -- cooperative cancellation ------------------------------------------------
+
+
+class _CancelAfter(CancellationToken):
+    """Token that cancels itself on the n-th check so operations stop mid-flight."""
+
+    def __init__(self, checks: int) -> None:
+        super().__init__()
+        self.remaining = checks
+
+    def raise_if_cancelled(self, message: str = "The operation was cancelled.") -> None:
+        self.remaining -= 1
+        if self.remaining <= 0:
+            self.cancel("cancelled by the test")
+        super().raise_if_cancelled(message)
+
+
+def _spec_with_data_disk():
+    spec = _spec()
+    disk_id = new_id()
+    spec.disks.append(
+        DiskSpec(id=disk_id, filename=f"data-{disk_id[:8]}.qcow2", size_bytes=1024**3, role="data")
+    )
+    return spec
+
+
+def test_create_stops_between_disks_and_removes_the_vm_directory(manager):
+    spec = _spec_with_data_disk()
+    token = CancellationToken()
+
+    def cancel_after_first(path, disk, cancel):
+        token.cancel("cancelled by the test")
+
+    manager.disks.on_create = cancel_after_first
+    with pytest.raises(CancelledError):
+        manager.create_vm(spec, cancel=token)
+
+    assert not manager.paths.vm_dir(spec.id).exists()
+    summaries, _errors = manager.list_summaries(refresh=True)
+    assert summaries == []
+    record = manager.recent_operations(1)[0]
+    assert (record.action, record.status.value) == ("Create VM", "cancelled")
+
+
+def test_create_with_a_pre_cancelled_token_does_nothing(manager):
+    spec = _spec()
+    manager.disks.on_create = lambda *_: pytest.fail("no disk should be created")
+    with pytest.raises(CancelledError):
+        manager.create_vm(spec, cancel=cancelled_token())
+    assert not manager.paths.vm_dir(spec.id).exists()
+
+
+def test_export_cancelled_midway_leaves_no_package(manager, tmp_path):
+    spec = manager.create_vm(_spec())
+    output = tmp_path / "package.oqv"
+
+    with pytest.raises(CancelledError):
+        manager.export_vm(spec.id, output, cancel=_CancelAfter(2))
+
+    assert not output.exists()
+    assert list(tmp_path.glob("*.tmp")) == []
+    assert list(tmp_path.glob("*.oqv")) == []
+
+
+def test_export_cancelled_during_verification_keeps_the_previous_package(manager, tmp_path):
+    spec = manager.create_vm(_spec())
+    output = tmp_path / "package.oqv"
+    output.write_bytes(b"previous package")
+
+    # The archive is complete and only the hash pass is cancelled.
+    with pytest.raises(CancelledError):
+        manager.export_vm(spec.id, output, overwrite=True, cancel=_CancelAfter(4))
+
+    assert output.read_bytes() == b"previous package"
+
+
+def test_import_cancelled_at_any_point_keeps_no_vm_and_no_staging(manager, tmp_path):
+    source = manager.create_vm(_spec())
+    package = tmp_path / "package.oqv"
+    manager.export_vm(source.id, package)
+
+    for checks in range(1, 7):
+        with pytest.raises(CancelledError):
+            manager.import_vm(package, cancel=_CancelAfter(checks))
+        summaries, _errors = manager.list_summaries(refresh=True)
+        assert [summary.spec.id for summary in summaries] == [source.id]
+        assert list(manager.paths.vms_dir.glob(".import-*")) == []
+
+
+def test_check_disks_propagates_cancellation_instead_of_reporting_a_failure(manager):
+    spec = manager.create_vm(_spec())
+    with pytest.raises(CancelledError):
+        manager.check_disks(spec.id, cancel=cancelled_token())
+    summaries, _errors = manager.list_summaries(refresh=True)
+    assert len(summaries) == 1

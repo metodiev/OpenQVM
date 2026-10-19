@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from openqvm import PRODUCT_NAME, PRODUCT_VERSION
+from openqvm.core.cancellation import CancellationToken
 from openqvm.core.errors import (
     ConflictError,
     CorruptDataError,
@@ -77,11 +78,13 @@ def suggested_export_name(spec: VMSpec) -> str:
     return f"{_slug(spec.name)}-{stamp}.oqv"
 
 
-def _sha256_file(path: Path) -> HashResult:
+def _sha256_file(path: Path, cancel: CancellationToken | None = None) -> HashResult:
     digest = hashlib.sha256()
     size = 0
     with path.open("rb") as handle:
         while True:
+            if cancel is not None:
+                cancel.raise_if_cancelled("The export was cancelled while verifying it.")
             chunk = handle.read(_CHUNK)
             if not chunk:
                 break
@@ -90,11 +93,18 @@ def _sha256_file(path: Path) -> HashResult:
     return HashResult(digest.hexdigest(), size)
 
 
-def _write_entry(zf: zipfile.ZipFile, arcname: str, source: Path) -> HashResult:
+def _write_entry(
+    zf: zipfile.ZipFile,
+    arcname: str,
+    source: Path,
+    cancel: CancellationToken | None = None,
+) -> HashResult:
     digest = hashlib.sha256()
     size = 0
     with source.open("rb") as src, zf.open(arcname, "w", force_zip64=True) as dst:
         while True:
+            if cancel is not None:
+                cancel.raise_if_cancelled("The export was cancelled.")
             chunk = src.read(_CHUNK)
             if not chunk:
                 break
@@ -110,7 +120,16 @@ class VmTransferService:
         self.store = store
         self.disks = disks
 
-    def export_vm(self, spec: VMSpec, output_path: Path, *, overwrite: bool = False) -> ExportResult:
+    def export_vm(
+        self,
+        spec: VMSpec,
+        output_path: Path,
+        *,
+        overwrite: bool = False,
+        cancel: CancellationToken | None = None,
+    ) -> ExportResult:
+        if cancel is not None:
+            cancel.raise_if_cancelled("The export was cancelled before it started.")
         output_path = Path(output_path).expanduser()
         if output_path.suffix.lower() != ".oqv":
             output_path = output_path.with_suffix(".oqv")
@@ -145,7 +164,7 @@ class VmTransferService:
                             f"The disk file is missing: {disk.filename}",
                             hint="Run a disk consistency check or restore the VM from a backup.",
                         )
-                    result = _write_entry(archive, f"disks/{disk.filename}", disk_path)
+                    result = _write_entry(archive, f"disks/{disk.filename}", disk_path, cancel)
                     disk_entries.append(
                         {
                             "filename": disk.filename,
@@ -158,7 +177,7 @@ class VmTransferService:
 
                 firmware_vars = self.paths.vm_firmware_dir(spec.id) / "OVMF_VARS.fd"
                 if firmware_vars.is_file():
-                    result = _write_entry(archive, "firmware/OVMF_VARS.fd", firmware_vars)
+                    result = _write_entry(archive, "firmware/OVMF_VARS.fd", firmware_vars, cancel)
                     firmware_entries.append(
                         {"filename": "OVMF_VARS.fd", "sha256": result.sha256, "stored_bytes": result.size}
                     )
@@ -183,6 +202,7 @@ class VmTransferService:
                 )
             with temp_path.open("rb+") as handle:
                 os.fsync(handle.fileno())
+            hash_result = _sha256_file(temp_path, cancel)
             if output_path.exists():
                 output_path.unlink()
             os.replace(temp_path, output_path)
@@ -190,13 +210,20 @@ class VmTransferService:
             temp_path.unlink(missing_ok=True)
             raise
 
-        hash_result = _sha256_file(output_path)
         if spec.cdrom_iso:
             warnings.append("The attached installation ISO is not included in the package.")
         log.info("Exported VM %s to %s (%s bytes)", spec.name, output_path, hash_result.size)
         return ExportResult(path=output_path, size_bytes=hash_result.size, sha256=hash_result.sha256, warnings=warnings)
 
-    def import_vm(self, package: Path, *, new_name: str | None = None) -> ImportResult:
+    def import_vm(
+        self,
+        package: Path,
+        *,
+        new_name: str | None = None,
+        cancel: CancellationToken | None = None,
+    ) -> ImportResult:
+        if cancel is not None:
+            cancel.raise_if_cancelled("The import was cancelled before it started.")
         package = Path(package).expanduser()
         if not package.is_absolute():
             raise ValidationError("The import package must be an absolute path.")
@@ -209,7 +236,9 @@ class VmTransferService:
             with zipfile.ZipFile(package) as archive:
                 manifest = self._read_manifest(archive)
                 spec, records, disk_manifest, firmware_manifest = self._parse_manifest(manifest, archive)
-                self._precheck_archive(archive, spec, disk_manifest, firmware_manifest)
+                self._precheck_archive(archive, spec, disk_manifest, firmware_manifest, cancel)
+                if cancel is not None:
+                    cancel.raise_if_cancelled("The import was cancelled.")
 
                 existing = self.store.list_specs()
                 target_name = self._unique_name(new_name or spec.name, existing)
@@ -248,7 +277,11 @@ class VmTransferService:
                     (staging / "disks").mkdir()
                     for entry in disk_manifest:
                         self._extract_entry(
-                            archive, entry, staging / "disks" / entry["filename"], f"disks/{entry['filename']}"
+                            archive,
+                            entry,
+                            staging / "disks" / entry["filename"],
+                            f"disks/{entry['filename']}",
+                            cancel,
                         )
                         disk_path = staging / "disks" / entry["filename"]
                         info = self.disks.info(disk_path)
@@ -275,14 +308,17 @@ class VmTransferService:
                                 entry,
                                 staging / "firmware" / entry["filename"],
                                 f"firmware/{entry['filename']}",
+                                cancel,
                             )
                     for directory in ("logs",):
                         (staging / directory).mkdir(exist_ok=True)
+                    if cancel is not None:
+                        cancel.raise_if_cancelled("The import was cancelled before it was registered.")
+                    os.replace(staging, final_dir)
                 except Exception:
                     shutil.rmtree(staging, ignore_errors=True)
                     raise
 
-                os.replace(staging, final_dir)
                 try:
                     self.store.save_snapshots(spec.id, records)
                     self.store.save_spec(spec)
@@ -376,7 +412,12 @@ class VmTransferService:
         return spec, records, normalized, firmware_normalized
 
     def _precheck_archive(
-        self, archive: zipfile.ZipFile, spec: VMSpec, disks: list[dict], firmware: list[dict]
+        self,
+        archive: zipfile.ZipFile,
+        spec: VMSpec,
+        disks: list[dict],
+        firmware: list[dict],
+        cancel: CancellationToken | None = None,
     ) -> None:
         expected_names = {_MANIFEST_NAME}
         expected_names.update(f"disks/{entry['filename']}" for entry in disks)
@@ -385,6 +426,8 @@ class VmTransferService:
         uncompressed_total = 0
         seen_names: set[str] = set()
         for info in archive.infolist():
+            if cancel is not None:
+                cancel.raise_if_cancelled("The import was cancelled.")
             name = info.filename
             if name.endswith("/"):
                 continue
@@ -419,7 +462,12 @@ class VmTransferService:
                 raise CorruptDataError(f"The package is missing {name}.")
 
     def _extract_entry(
-        self, archive: zipfile.ZipFile, entry: dict, destination: Path, archive_name: str
+        self,
+        archive: zipfile.ZipFile,
+        entry: dict,
+        destination: Path,
+        archive_name: str,
+        cancel: CancellationToken | None = None,
     ) -> None:
         destination = Path(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -427,6 +475,8 @@ class VmTransferService:
         written = 0
         with archive.open(archive_name) as src, destination.open("wb") as dst:
             while True:
+                if cancel is not None:
+                    cancel.raise_if_cancelled("The import was cancelled.")
                 chunk = src.read(_CHUNK)
                 if not chunk:
                     break

@@ -16,7 +16,7 @@ only for real VM operations; the unit and integration suites use fakes.
 
 ```
 src/openqvm/
-  core/          models, validation, atomic writes, locking, logging, errors
+  core/          models, validation, atomic writes, locking, logging, errors, cancellation
   platform/      QEMU discovery, capability detection, OS-specific adapters
   vm/            VmManager, backend protocol, QEMU process/QMP/RFB, command builder
   storage/       qemu-img wrapper, ISO inspection, .oqv transfer
@@ -26,7 +26,7 @@ src/openqvm/
   app/           AppContext composition root
   ui/            Qt pages, theme, async runner, VNC widget
 tests/
-  unit/          models, validation, store, QMP, RFB, command builder, security
+  unit/          models, validation, store, QMP, RFB, command builder, security, cancellation
   integration/   manager orchestration with a fake backend and fake disks
   end_to_end/    real QEMU boot, console, snapshot, export/import, clone
 docs/            architecture, installation, security, this guide
@@ -137,6 +137,22 @@ window.grab().save("dashboard.png")
   lock and is documented as potentially disruptive.
 - Never bypass the lock automatically; a forced eject can break a guest that has
   the media mounted.
+
+## Cancelling operations
+
+- Long operations take an optional `cancel: CancellationToken`
+  (`openqvm.core.cancellation`). Pass it down instead of catching Ctrl+C or
+  checking a global flag.
+- Check it between chunks (`raise_if_cancelled`) and before irreversible steps
+  (registering a VM, replacing an archive). A cancelled operation must leave no
+  partial file, package or VM directory behind.
+- `run_tool` polls its child process and terminates it; a single in-flight
+  `qemu-img` or QMP call cannot be interrupted mid-request, so cancellation is
+  cooperative rather than instant.
+- Signal cancellation with `CancelledError`; the GUI shows it in the status bar
+  instead of an error dialog (`MainWindow._report_error`).
+- `AsyncRunner.submit` returns the job's token and `cancel_active()` cancels every
+  running job; callbacks receive the token as their only argument.
 
 ## Snapshot semantics
 

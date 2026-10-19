@@ -17,7 +17,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypeVar
 
+from openqvm.core.cancellation import CancellationToken
 from openqvm.core.errors import (
+    CancelledError,
     ConflictError,
     InvalidStateError,
     OpenQVMError,
@@ -325,7 +327,7 @@ class VmManager:
 
     # -- create / update / delete --------------------------------------------
 
-    def create_vm(self, spec: VMSpec) -> VMSpec:
+    def create_vm(self, spec: VMSpec, *, cancel: CancellationToken | None = None) -> VMSpec:
         record = self.operations.start("Create VM", vm_id=spec.id, vm_name=spec.name)
         try:
             with self._create_lock:
@@ -333,7 +335,7 @@ class VmManager:
                 vm_dir = self.store.create_vm_dir(spec.id)
                 try:
                     for disk in spec.disks:
-                        self.disks.create(self.store.disk_path(spec, disk), disk)
+                        self.disks.create(self.store.disk_path(spec, disk), disk, cancel=cancel)
                     self.store.save_spec(spec)
                     self.store.save_runtime(VMRuntime(vm_id=spec.id))
                 except Exception:
@@ -486,7 +488,15 @@ class VmManager:
     # -- storage --------------------------------------------------------------
 
     @_recorded("Resize disk")
-    def resize_disk(self, vm_id: str, disk_id: str, new_size_bytes: int, *, live: bool = False) -> VMSpec:
+    def resize_disk(
+        self,
+        vm_id: str,
+        disk_id: str,
+        new_size_bytes: int,
+        *,
+        live: bool = False,
+        cancel: CancellationToken | None = None,
+    ) -> VMSpec:
         with self.store.lock(vm_id, timeout=60):
             spec = self.store.load_spec(vm_id)
             runtime = self.backend.refresh(spec, self.store.load_runtime(vm_id))
@@ -514,7 +524,9 @@ class VmManager:
                 self.backend.resize_disk_live(spec, runtime, index, new_size_bytes)
                 reason = "disk_resized_live"
             else:
-                self.disks.resize(self.store.disk_path(spec, disk), disk, new_size_bytes)
+                self.disks.resize(
+                    self.store.disk_path(spec, disk), disk, new_size_bytes, cancel=cancel
+                )
                 reason = "disk_resized"
             updated = replace(disk, size_bytes=new_size_bytes)
             spec.disks = [updated if item.id == disk_id else item for item in spec.disks]
@@ -536,6 +548,7 @@ class VmManager:
         disk_format: DiskFormat = DiskFormat.QCOW2,
         bus: DiskBus = DiskBus.VIRTIO,
         preallocated: bool = False,
+        cancel: CancellationToken | None = None,
     ) -> VMSpec:
         with self.store.lock(vm_id, timeout=30):
             spec = self.store.load_spec(vm_id)
@@ -557,7 +570,7 @@ class VmManager:
             candidate = replace(spec, disks=[*spec.disks, new_disk])
             self._raise_for_issues(candidate, exclude_vm_id=vm_id)
             path = self.store.disk_path(spec, new_disk)
-            self.disks.create(path, new_disk)
+            self.disks.create(path, new_disk, cancel=cancel)
             try:
                 spec.disks.append(new_disk)
                 spec.touch()
@@ -687,7 +700,9 @@ class VmManager:
         return virtual, allocated
 
     @_recorded("Check disks")
-    def check_disks(self, vm_id: str, *, timeout: float = 1800.0) -> DiskCheckSummary:
+    def check_disks(
+        self, vm_id: str, *, timeout: float = 1800.0, cancel: CancellationToken | None = None
+    ) -> DiskCheckSummary:
         """Run ``qemu-img check`` on every disk of a stopped VM.
 
         Individual disk failures are reported in the result rather than raised so
@@ -708,7 +723,9 @@ class VmManager:
             for disk in spec.disks:
                 path = self.store.disk_path(spec, disk)
                 try:
-                    results.append(self.disks.check(path, timeout=timeout))
+                    results.append(self.disks.check(path, timeout=timeout, cancel=cancel))
+                except CancelledError:
+                    raise
                 except OpenQVMError as exc:
                     results.append(
                         DiskCheckResult(path=path, ok=False, output=exc.message, error=exc.code.value)
@@ -778,7 +795,14 @@ class VmManager:
         return views
 
     @_recorded("Create snapshot")
-    def create_snapshot(self, vm_id: str, name: str, description: str = "") -> SnapshotView:
+    def create_snapshot(
+        self,
+        vm_id: str,
+        name: str,
+        description: str = "",
+        *,
+        cancel: CancellationToken | None = None,
+    ) -> SnapshotView:
         name = name.strip()
         raise_if_errors(validate_snapshot_name(name), message="The snapshot name is not valid.")
         with self.store.lock(vm_id, timeout=60):
@@ -801,7 +825,7 @@ class VmManager:
                     client.close()
             else:
                 self._require_offline_safe(runtime)
-                record = self.snapshots.create_offline(spec, name, description)
+                record = self.snapshots.create_offline(spec, name, description, cancel=cancel)
             metadata.append(record)
             try:
                 self.store.save_snapshots(vm_id, metadata)
@@ -828,7 +852,9 @@ class VmManager:
         return view
 
     @_recorded("Restore snapshot")
-    def restore_snapshot(self, vm_id: str, name: str) -> VMRuntime:
+    def restore_snapshot(
+        self, vm_id: str, name: str, *, cancel: CancellationToken | None = None
+    ) -> VMRuntime:
         with self.store.lock(vm_id, timeout=120):
             spec = self.store.load_spec(vm_id)
             runtime = self.backend.refresh(spec, self.store.load_runtime(vm_id))
@@ -856,12 +882,14 @@ class VmManager:
                     spec.name,
                 )
             self._require_offline_safe(runtime)
-            self.snapshots.restore_offline(spec, name)
+            self.snapshots.restore_offline(spec, name, cancel=cancel)
         self._publish_snapshots(vm_id, name=name, reason="restored")
         return runtime
 
     @_recorded("Delete snapshot")
-    def delete_snapshot(self, vm_id: str, name: str) -> None:
+    def delete_snapshot(
+        self, vm_id: str, name: str, *, cancel: CancellationToken | None = None
+    ) -> None:
         with self.store.lock(vm_id, timeout=120):
             spec = self.store.load_spec(vm_id)
             runtime = self.backend.refresh(spec, self.store.load_runtime(vm_id))
@@ -873,7 +901,7 @@ class VmManager:
                     client.close()
             else:
                 self._require_offline_safe(runtime)
-                self.snapshots.delete_offline(spec, name)
+                self.snapshots.delete_offline(spec, name, cancel=cancel)
             metadata = [record for record in self.store.load_snapshots(vm_id) if record.name != name]
             self.store.save_snapshots(vm_id, metadata)
         self._publish_snapshots(vm_id, name=name, reason="deleted")
@@ -881,7 +909,9 @@ class VmManager:
     # -- clone / export / import ---------------------------------------------
 
     @_recorded("Clone VM")
-    def clone_vm(self, vm_id: str, new_name: str) -> CloneResult:
+    def clone_vm(
+        self, vm_id: str, new_name: str, *, cancel: CancellationToken | None = None
+    ) -> CloneResult:
         raise_if_errors(validate_vm_name(new_name), message="The clone name is not valid.")
         with self.store.lock(vm_id, timeout=120):
             source = self.store.load_spec(vm_id)
@@ -903,6 +933,7 @@ class VmManager:
                         self.store.disk_path(clone, target_disk),
                         target_format=target_disk.format,
                         preallocated=target_disk.preallocated,
+                        cancel=cancel,
                     )
                 self.store.save_spec(clone)
                 self.store.save_runtime(VMRuntime(vm_id=clone.id))
@@ -918,7 +949,14 @@ class VmManager:
         return CloneResult(spec=clone, warnings=warnings)
 
     @_recorded("Export VM")
-    def export_vm(self, vm_id: str, output_path: Path, *, overwrite: bool = False) -> ExportResult:
+    def export_vm(
+        self,
+        vm_id: str,
+        output_path: Path,
+        *,
+        overwrite: bool = False,
+        cancel: CancellationToken | None = None,
+    ) -> ExportResult:
         with self.store.lock(vm_id, timeout=120):
             spec = self.store.load_spec(vm_id)
             runtime = self.backend.refresh(spec, self.store.load_runtime(vm_id))
@@ -927,13 +965,15 @@ class VmManager:
                     "A running virtual machine cannot be exported.",
                     hint="Shut down the VM so the exported disks are consistent.",
                 )
-            return self.transfer.export_vm(spec, output_path, overwrite=overwrite)
+            return self.transfer.export_vm(spec, output_path, overwrite=overwrite, cancel=cancel)
 
-    def import_vm(self, package: Path, *, new_name: str | None = None) -> ImportResult:
+    def import_vm(
+        self, package: Path, *, new_name: str | None = None, cancel: CancellationToken | None = None
+    ) -> ImportResult:
         record = self.operations.start("Import VM", vm_name=new_name or package.name)
         try:
             with self._create_lock:
-                result = self.transfer.import_vm(package, new_name=new_name)
+                result = self.transfer.import_vm(package, new_name=new_name, cancel=cancel)
             self.operations.succeed(record, message=f"Imported '{result.spec.name}'.")
             return result
         except OpenQVMError as exc:

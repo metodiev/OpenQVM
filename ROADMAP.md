@@ -53,6 +53,8 @@ untested platforms are not claimed as verified.
 - [x] Live ISO insert/replace/eject through QMP (media lock respected; `--force` opt-in)
 - [x] Live disk growth through QMP `block_resize`
 - [x] Console input: absolute USB pointer, Ctrl+Alt+Del, type-text without a guest agent
+- [x] Cooperative cancellation for long-running exports, imports, clones, disk and
+      snapshot operations, with partial-artifact cleanup
 - [ ] Bridged networking (requires privileged helper/bridge configuration)
 - [ ] Host-only networking
 - [ ] TPM 2.0 (swtpm integration)
@@ -60,7 +62,6 @@ untested platforms are not claimed as verified.
 - [ ] Scheduled/automatic backups
 - [ ] Shared folders on Windows/macOS
 - [ ] USB passthrough
-- [ ] Cooperative cancellation for long-running exports, imports and disk operations
 
 ## Phase 5 — Cross-platform support (partial)
 
@@ -92,5 +93,5 @@ untested platforms are not claimed as verified.
 2. Add QMP/VNC authentication (Unix socket or session token) for multi-user hosts.
 3. Implement host-only networking and a privileged, authenticated bridge helper.
 4. Add TPM 2.0 support for Windows 11 guests.
-5. Add live ISO change and live disk resize where QEMU supports them safely.
+5. Add Ctrl+C-aware progress reporting to `openqvm-cli` long-running commands.
 6. Package installers and add code signing.

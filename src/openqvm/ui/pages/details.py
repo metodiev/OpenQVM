@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -35,7 +37,8 @@ from PySide6.QtWidgets import (
 )
 
 from openqvm.app.context import AppContext
-from openqvm.core.errors import OpenQVMError
+from openqvm.core.cancellation import CancellationToken
+from openqvm.core.errors import ErrorCode, OpenQVMError
 from openqvm.core.models import (
     CpuSpec,
     DiskBus,
@@ -741,8 +744,15 @@ class VmDetailsPage(QWidget):
 
     # -- operations -----------------------------------------------------------
 
-    def _run(self, description: str, function, on_success=None, *, refresh: bool = True) -> None:  # type: ignore[no-untyped-def]
-        self.runner.submit(
+    def _run(
+        self,
+        description: str,
+        function: Callable[[CancellationToken], Any],
+        on_success: Callable[[Any], None] | None = None,
+        *,
+        refresh: bool = True,
+    ) -> CancellationToken:
+        return self.runner.submit(
             description,
             function,
             on_success=lambda result: self._operation_done(result, on_success, refresh),
@@ -757,7 +767,8 @@ class VmDetailsPage(QWidget):
         self.changed.emit()
 
     def _operation_failed(self, error: OpenQVMError) -> None:
-        show_error(self, error)
+        if error.code != ErrorCode.CANCELLED:
+            show_error(self, error)
         self.full_refresh()
 
     def _lifecycle(self, action: str) -> None:
@@ -766,13 +777,13 @@ class VmDetailsPage(QWidget):
         manager = self.context.manager
         vm_id = self.vm_id
         if action == "start":
-            self._run("Starting VM", lambda: manager.start_vm(vm_id))
+            self._run("Starting VM", lambda _token: manager.start_vm(vm_id))
         elif action == "pause":
-            self._run("Pausing VM", lambda: manager.pause_vm(vm_id))
+            self._run("Pausing VM", lambda _token: manager.pause_vm(vm_id))
         elif action == "resume":
-            self._run("Resuming VM", lambda: manager.resume_vm(vm_id))
+            self._run("Resuming VM", lambda _token: manager.resume_vm(vm_id))
         elif action == "stop":
-            self._run("Stopping VM", lambda: manager.stop_vm(vm_id, force=False, timeout=30))
+            self._run("Stopping VM", lambda _token: manager.stop_vm(vm_id, force=False, timeout=30))
         elif action == "force_stop":
             if not confirm(
                 self,
@@ -783,7 +794,7 @@ class VmDetailsPage(QWidget):
                 dangerous=True,
             ):
                 return
-            self._run("Force stopping VM", lambda: manager.stop_vm(vm_id, force=True))
+            self._run("Force stopping VM", lambda _token: manager.stop_vm(vm_id, force=True))
 
     def _open_console(self) -> None:
         if self.vm_id and self.runtime and self.runtime.status in (VMStatus.RUNNING, VMStatus.PAUSED):
@@ -807,7 +818,7 @@ class VmDetailsPage(QWidget):
         revision = spec.revision
         self._run(
             "Saving VM configuration",
-            lambda: self.context.manager.update_vm(spec, expected_revision=revision),
+            lambda _token: self.context.manager.update_vm(spec, expected_revision=revision),
         )
 
     def _disk_id(self) -> str | None:
@@ -826,12 +837,13 @@ class VmDetailsPage(QWidget):
         values = dialog.values()
         self._run(
             "Adding disk",
-            lambda: self.context.manager.add_disk(
+            lambda token: self.context.manager.add_disk(
                 self.vm_id,
                 size_bytes=values["size_gib"] * 1024**3,
                 disk_format=values["format"],
                 bus=values["bus"],
                 preallocated=values["preallocated"],
+                cancel=token,
             ),
         )
 
@@ -867,8 +879,8 @@ class VmDetailsPage(QWidget):
             return
         self._run(
             "Resizing disk",
-            lambda: self.context.manager.resize_disk(
-                self.vm_id, disk_id, size * 1024**3, live=live
+            lambda token: self.context.manager.resize_disk(
+                self.vm_id, disk_id, size * 1024**3, live=live, cancel=token
             ),
         )
 
@@ -877,7 +889,7 @@ class VmDetailsPage(QWidget):
             return
         self.runner.submit(
             "Checking disks",
-            lambda: self.context.manager.check_disks(self.vm_id),
+            lambda token: self.context.manager.check_disks(self.vm_id, cancel=token),
             on_success=self._show_disk_check,
             on_error=self._operation_failed,
         )
@@ -930,7 +942,7 @@ class VmDetailsPage(QWidget):
             return
         self._run(
             "Removing disk",
-            lambda: self.context.manager.remove_disk(self.vm_id, disk_id),
+            lambda _token: self.context.manager.remove_disk(self.vm_id, disk_id),
         )
 
     def _attach_iso(self) -> None:
@@ -955,7 +967,7 @@ class VmDetailsPage(QWidget):
             return
         self._run(
             "Attaching ISO",
-            lambda: self.context.manager.attach_iso(self.vm_id, path, live=live),
+            lambda _token: self.context.manager.attach_iso(self.vm_id, path, live=live),
         )
 
     def _eject_iso(self) -> None:
@@ -976,7 +988,7 @@ class VmDetailsPage(QWidget):
             return
         self._run(
             "Ejecting ISO",
-            lambda: self.context.manager.eject_iso(self.vm_id, live=live),
+            lambda _token: self.context.manager.eject_iso(self.vm_id, live=live),
         )
 
     def _selected_nic(self) -> NicSpec | None:
@@ -1023,7 +1035,7 @@ class VmDetailsPage(QWidget):
         revision = spec.revision
         self._run(
             "Saving network configuration",
-            lambda: self.context.manager.update_vm(spec, expected_revision=revision),
+            lambda _token: self.context.manager.update_vm(spec, expected_revision=revision),
         )
 
     def _create_snapshot(self) -> None:
@@ -1035,7 +1047,7 @@ class VmDetailsPage(QWidget):
         name, description = dialog.values()
         self._run(
             "Creating snapshot",
-            lambda: self.context.manager.create_snapshot(self.vm_id, name, description),
+            lambda token: self.context.manager.create_snapshot(self.vm_id, name, description, cancel=token),
             on_success=lambda _: self._load_snapshots(),
         )
 
@@ -1077,7 +1089,7 @@ class VmDetailsPage(QWidget):
             return
         self._run(
             "Restoring snapshot",
-            lambda: self.context.manager.restore_snapshot(self.vm_id, view.name),
+            lambda token: self.context.manager.restore_snapshot(self.vm_id, view.name, cancel=token),
             on_success=lambda _: self._load_snapshots(),
         )
 
@@ -1096,7 +1108,7 @@ class VmDetailsPage(QWidget):
             return
         self._run(
             "Deleting snapshot",
-            lambda: self.context.manager.delete_snapshot(self.vm_id, view.name),
+            lambda token: self.context.manager.delete_snapshot(self.vm_id, view.name, cancel=token),
             on_success=lambda _: self._load_snapshots(),
         )
 
@@ -1118,7 +1130,7 @@ class VmDetailsPage(QWidget):
         vm_id = self.vm_id
         self._run(
             "Deleting VM",
-            lambda: self.context.manager.delete_vm(vm_id),
+            lambda _token: self.context.manager.delete_vm(vm_id),
             on_success=lambda _: self.deleted.emit(vm_id),
             refresh=False,
         )

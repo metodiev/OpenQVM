@@ -19,6 +19,11 @@ All notable changes to OpenQVM are documented here. The format follows
   inserted, replaced or ejected while the VM runs, and disks can be grown through
   QEMU `block_resize`. QEMU's media lock is respected by default; `--force` is
   available for explicit, documented overrides.
+- Cooperative cancellation for long-running operations: a `CancellationToken`
+  (``openqvm.core.cancellation``) is threaded through disk, snapshot and transfer
+  work, checked between chunks, and surfaced in the GUI as a Cancel button in the
+  status bar. Cancelled work removes partial packages, staging directories and
+  half-written disks instead of leaving debris.
 - Integration and end-to-end coverage for the event bus, disk checks,
   event-driven refresh and live storage operations.
 - Guest compatibility and console input: an absolute USB tablet (no pointer

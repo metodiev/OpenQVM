@@ -56,6 +56,7 @@ class _PageId:
 
 class CreateVmWizard(QWizard):
     create_requested = Signal(object)
+    cancel_requested = Signal()
 
     def __init__(self, context: AppContext, parent=None) -> None:
         super().__init__(parent)
@@ -135,17 +136,29 @@ class CreateVmWizard(QWizard):
         self._submitted = True
         self.button(QWizard.WizardButton.FinishButton).setEnabled(False)
         self.button(QWizard.WizardButton.BackButton).setEnabled(False)
-        self.button(QWizard.WizardButton.CancelButton).setEnabled(False)
+        summary: SummaryPage = self.page(_PageId.SUMMARY)  # type: ignore[assignment]
+        summary.show_message("Creating the virtual machine… choose Cancel to stop.", severity="info")
         self.create_requested.emit(spec)
+
+    def reject(self) -> None:  # noqa: N802 - Qt override
+        """Cancel closes the wizard; while a creation is running it cancels the work instead."""
+
+        if self._submitted:
+            self.cancel_requested.emit()
+            return
+        super().reject()
 
     def creation_succeeded(self) -> None:
         super().accept()
+
+    def creation_cancelling(self) -> None:
+        summary: SummaryPage = self.page(_PageId.SUMMARY)  # type: ignore[assignment]
+        summary.show_message("Cancelling creation…", severity="info")
 
     def creation_failed(self, error: OpenQVMError) -> None:
         self._submitted = False
         self.button(QWizard.WizardButton.FinishButton).setEnabled(True)
         self.button(QWizard.WizardButton.BackButton).setEnabled(True)
-        self.button(QWizard.WizardButton.CancelButton).setEnabled(True)
         summary: SummaryPage = self.page(_PageId.SUMMARY)  # type: ignore[assignment]
         summary.show_error(error)
 
@@ -669,6 +682,9 @@ class SummaryPage(_WizardPage):
 
     def show_error(self, error: OpenQVMError) -> None:
         self.banner.show_message(_escape(error.message), severity="error")
+
+    def show_message(self, message: str, *, severity: str = "info") -> None:
+        self.banner.show_message(_escape(message), severity=severity)
 
     def isComplete(self) -> bool:  # noqa: N802
         if self._spec is None:

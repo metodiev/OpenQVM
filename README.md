@@ -28,6 +28,7 @@
 | TPM 2.0 | ❌ Not implemented yet; Windows 11 guests warn about this |
 | Real host/VM metrics | ✅ Measured with psutil; unavailable values are labelled |
 | Live UI updates | ✅ Manager events refresh the UI immediately; polling is only a fallback |
+| Cancel long operations | ✅ Cooperative cancellation for create, clone, export, import, disk and snapshot work, with cleanup of partial files |
 | Dark and light themes | ✅ |
 
 ## Screenshots
@@ -169,7 +170,9 @@ Known security-related limitations in this alpha:
 - Live ISO changes and live disk growth use QEMU's medium and block-resize commands. The guest may keep using the old medium (QEMU then refuses without force) and may need to rescan a grown disk before it sees the new size. Forcing a medium change can disrupt a guest that has the media mounted.
 - Console "type text" assumes a US keyboard layout; characters outside its mapping are skipped and reported. It types key events and therefore works without a guest agent.
 - Clipboard integration and USB passthrough are not implemented.
-- Long-running operations have timeouts and force-stop recovery, but they cannot be cancelled midway from the UI yet.
+- Cancellation is cooperative: long operations stop between chunks of work, so a
+  single in-flight `qemu-img` or QMP call finishes before the operation aborts.
+  Partial packages, staging directories and half-written disks are removed.
 - Online snapshots include guest memory only when QEMU can save it (KVM/TCG typically can; WHPX cannot). The fallback is an explicitly labelled disk-only snapshot that must be restored while the VM is stopped.
 - Cloning does not copy snapshot history. Use export/import if you need a disk with its internal snapshots.
 - Installers, code signing and package repositories are not provided yet.

@@ -175,6 +175,13 @@ implemented. The UI explains the security implications of each mode.
   stopped.
 - Long operations (boot, export, disk creation) surface progress or a busy
   indicator, and errors include a code, hint and log excerpt.
+- Long-running work accepts a ``CancellationToken`` (``openqvm.core.cancellation``).
+  The GUI's ``AsyncRunner`` creates one token per job and exposes the Cancel
+  button in the status bar; ``run_tool`` polls its child process every 200 ms and
+  terminates it on cancellation, ``DiskManager.copy`` checks between 4 MiB chunks,
+  and export/import remove their temporary archive or staging directory before the
+  ``CancelledError`` reaches the caller. Each layer therefore cleans up its own
+  partial state instead of relying on the top-level caller.
 
 ## 5. Trust boundaries
 

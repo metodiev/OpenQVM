@@ -17,6 +17,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from openqvm.core.cancellation import CancellationToken
 from openqvm.core.errors import (
     InvalidStateError,
     OperationFailedError,
@@ -74,7 +75,11 @@ class SnapshotService:
                 common = {name: info for name, info in common.items() if name in disk_tags}
         return sorted((common or {}).values(), key=lambda item: item.name.lower())
 
-    def create_offline(self, spec: VMSpec, name: str, description: str = "") -> SnapshotRecord:
+    def create_offline(
+        self, spec: VMSpec, name: str, description: str = "", cancel: CancellationToken | None = None
+    ) -> SnapshotRecord:
+        if cancel is not None:
+            cancel.raise_if_cancelled("Snapshot creation was cancelled.")
         disks = _snapshot_disks(spec)
         for disk in disks:
             existing_tags = {info.name for info in self._list_disk_snapshots(self.store.disk_path(spec, disk))}
@@ -83,8 +88,10 @@ class SnapshotService:
         created: list[Path] = []
         try:
             for disk in disks:
+                if cancel is not None:
+                    cancel.raise_if_cancelled("Snapshot creation was cancelled.")
                 path = self.store.disk_path(spec, disk)
-                self._run_img(["snapshot", "-c", name, str(path)], operation="create snapshot")
+                self._run_img(["snapshot", "-c", name, str(path)], operation="create snapshot", cancel=cancel)
                 created.append(path)
         except Exception:
             for path in created:
@@ -111,15 +118,30 @@ class SnapshotService:
             disks=[disk.filename for disk in disks],
         )
 
-    def restore_offline(self, spec: VMSpec, name: str) -> None:
-        disks = _snapshot_disks(spec)
-        for disk in disks:
-            self._run_img(["snapshot", "-a", name, str(self.store.disk_path(spec, disk))], operation="restore")
+    def restore_offline(
+        self, spec: VMSpec, name: str, cancel: CancellationToken | None = None
+    ) -> None:
+        for disk in _snapshot_disks(spec):
+            if cancel is not None:
+                cancel.raise_if_cancelled("Snapshot restore was cancelled.")
+            self._run_img(
+                ["snapshot", "-a", name, str(self.store.disk_path(spec, disk))],
+                operation="restore",
+                cancel=cancel,
+            )
         log.info("Restored disk-only snapshot %s for %s", name, spec.name)
 
-    def delete_offline(self, spec: VMSpec, name: str) -> None:
+    def delete_offline(
+        self, spec: VMSpec, name: str, cancel: CancellationToken | None = None
+    ) -> None:
         for disk in _snapshot_disks(spec):
-            self._run_img(["snapshot", "-d", name, str(self.store.disk_path(spec, disk))], operation="delete")
+            if cancel is not None:
+                cancel.raise_if_cancelled("Snapshot deletion was cancelled.")
+            self._run_img(
+                ["snapshot", "-d", name, str(self.store.disk_path(spec, disk))],
+                operation="delete",
+                cancel=cancel,
+            )
 
     def _list_disk_snapshots(self, path: Path) -> list[SnapshotTagInfo]:
         result = run_tool(
@@ -134,11 +156,14 @@ class SnapshotService:
             )
         return parse_snapshot_list(result.stdout)
 
-    def _run_img(self, args: list[str], *, operation: str) -> None:
+    def _run_img(
+        self, args: list[str], *, operation: str, cancel: CancellationToken | None = None
+    ) -> None:
         result = run_tool(
             [str(self.disks.require_qemu_img()), *args],
             timeout=3600,
             tool_name="qemu-img",
+            cancel=cancel,
         )
         if not result.ok:
             raise OperationFailedError(

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import functools
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from PySide6.QtCore import QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
@@ -26,7 +28,8 @@ from PySide6.QtWidgets import (
 
 from openqvm import PRODUCT_NAME, PRODUCT_VERSION
 from openqvm.app.context import AppContext
-from openqvm.core.errors import OpenQVMError
+from openqvm.core.cancellation import CancellationToken
+from openqvm.core.errors import ErrorCode, OpenQVMError
 from openqvm.core.events import ALL_TOPICS, TOPIC_SNAPSHOTS_CHANGED
 from openqvm.core.logging import get_logger
 from openqvm.core.models import VMStatus
@@ -174,7 +177,12 @@ class MainWindow(QMainWindow):
         self.progress.setRange(0, 0)
         self.progress.setFixedWidth(120)
         self.progress.setVisible(False)
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.setToolTip("Ask the running operation to stop")
+        self.cancel_button.setVisible(False)
+        self.cancel_button.clicked.connect(self.cancel_operation)
         status.addWidget(self.status_message, 1)
+        status.addPermanentWidget(self.cancel_button)
         status.addPermanentWidget(self.progress)
         self.setStatusBar(status)
 
@@ -312,20 +320,43 @@ class MainWindow(QMainWindow):
 
     def _on_busy(self, busy: bool, description: str) -> None:
         self.progress.setVisible(busy)
+        self.cancel_button.setEnabled(True)
+        self.cancel_button.setVisible(busy)
         self.status_message.setText(description if busy else "Ready")
+
+    def cancel_operation(self) -> None:
+        """Request a cooperative stop of every running background operation."""
+
+        requested = self.runner.cancel_active()
+        if requested:
+            self.status_message.setText("Cancelling…")
+            self.cancel_button.setEnabled(False)
 
     # -- VM operations --------------------------------------------------------
 
     def _summary(self, vm_id: str):
         return next((summary for summary in self.summaries if summary.spec.id == vm_id), None)
 
-    def _run(self, description: str, function, *, on_success=None, on_error=None) -> None:  # type: ignore[no-untyped-def]
-        self.runner.submit(
+    def _run(
+        self,
+        description: str,
+        function: Callable[[CancellationToken], Any],
+        *,
+        on_success: Callable[[Any], None] | None = None,
+        on_error: Callable[[OpenQVMError], None] | None = None,
+    ) -> CancellationToken:
+        return self.runner.submit(
             description,
             function,
             on_success=on_success,
-            on_error=on_error or (lambda error: show_error(self, error)),
+            on_error=on_error or (lambda error: self._report_error(error)),
         )
+
+    def _report_error(self, error: OpenQVMError) -> None:
+        if error.code == ErrorCode.CANCELLED:
+            self.status_message.setText(error.message)
+            return
+        show_error(self, error)
 
     def _after_change(self, message: str = "") -> None:
         self.refresh_all()
@@ -335,19 +366,35 @@ class MainWindow(QMainWindow):
     def create_vm(self) -> None:
         wizard = CreateVmWizard(self.context, self)
         self._wizard = wizard
+        self._creation_token: CancellationToken | None = None
 
         def submitted(spec) -> None:  # type: ignore[no-untyped-def]
             def success(created) -> None:  # type: ignore[no-untyped-def]
+                self._creation_token = None
                 wizard.creation_succeeded()
                 self.refresh_all()
                 self.open_details(created.id)
 
             def failure(error: OpenQVMError) -> None:
+                self._creation_token = None
                 wizard.creation_failed(error)
 
-            self._run("Creating virtual machine", lambda: self.context.manager.create_vm(spec), on_success=success, on_error=failure)
+            self._creation_token = self._run(
+                "Creating virtual machine",
+                lambda token: self.context.manager.create_vm(spec, cancel=token),
+                on_success=success,
+                on_error=failure,
+            )
+
+        def cancelled() -> None:
+            token = self._creation_token
+            if token is None or token.is_cancelled:
+                return
+            token.cancel("Creation was cancelled by the user.")
+            wizard.creation_cancelling()
 
         wizard.create_requested.connect(submitted)
+        wizard.cancel_requested.connect(cancelled)
         wizard.finished.connect(lambda _: setattr(self, "_wizard", None))
         wizard.exec()
 
@@ -356,26 +403,26 @@ class MainWindow(QMainWindow):
             self.refresh_all()
             self.open_console(vm_id)
 
-        self._run("Starting virtual machine", lambda: self.context.manager.start_vm(vm_id), on_success=success)
+        self._run("Starting virtual machine", lambda _token: self.context.manager.start_vm(vm_id), on_success=success)
 
     def pause_vm(self, vm_id: str) -> None:
         self._run(
             "Pausing virtual machine",
-            lambda: self.context.manager.pause_vm(vm_id),
+            lambda _token: self.context.manager.pause_vm(vm_id),
             on_success=lambda _: self._after_change(),
         )
 
     def resume_vm(self, vm_id: str) -> None:
         self._run(
             "Resuming virtual machine",
-            lambda: self.context.manager.resume_vm(vm_id),
+            lambda _token: self.context.manager.resume_vm(vm_id),
             on_success=lambda _: self._after_change(),
         )
 
     def stop_vm(self, vm_id: str) -> None:
         self._run(
             "Shutting down virtual machine",
-            lambda: self.context.manager.stop_vm(vm_id, force=False, timeout=30),
+            lambda _token: self.context.manager.stop_vm(vm_id, force=False, timeout=30),
             on_success=lambda _: self._after_change("Virtual machine stopped."),
         )
 
@@ -393,7 +440,7 @@ class MainWindow(QMainWindow):
             return
         self._run(
             "Force stopping virtual machine",
-            lambda: self.context.manager.stop_vm(vm_id, force=True),
+            lambda _token: self.context.manager.stop_vm(vm_id, force=True),
             on_success=lambda _: self._after_change("Virtual machine force-stopped."),
         )
 
@@ -411,7 +458,7 @@ class MainWindow(QMainWindow):
             return
         self._run(
             "Deleting virtual machine",
-            lambda: self.context.manager.delete_vm(vm_id),
+            lambda _token: self.context.manager.delete_vm(vm_id),
             on_success=lambda _: self._after_change("Virtual machine moved to the trash."),
         )
 
@@ -423,7 +470,7 @@ class MainWindow(QMainWindow):
             return
         self._run(
             "Cloning virtual machine",
-            lambda: self.context.manager.clone_vm(vm_id, name.strip()),
+            lambda token: self.context.manager.clone_vm(vm_id, name.strip(), cancel=token),
             on_success=lambda result: self._clone_done(result),
         )
 
@@ -445,7 +492,7 @@ class MainWindow(QMainWindow):
             return
         self._run(
             "Exporting virtual machine",
-            lambda: self.context.manager.export_vm(vm_id, Path(path), overwrite=overwrite),
+            lambda token: self.context.manager.export_vm(vm_id, Path(path), overwrite=overwrite, cancel=token),
             on_success=self._export_done,
         )
 
@@ -475,7 +522,7 @@ class MainWindow(QMainWindow):
 
         self._run(
             "Importing virtual machine",
-            lambda: self.context.manager.import_vm(Path(path)),
+            lambda token: self.context.manager.import_vm(Path(path), cancel=token),
             on_success=success,
         )
 
@@ -548,5 +595,6 @@ class MainWindow(QMainWindow):
         self._unsubscribers.clear()
         for console in list(getattr(self, "_consoles", {}).values()):
             console.close()
+        self.runner.cancel_active("OpenQVM is closing")
         self.runner.wait_for_done(5000)
         super().closeEvent(event)

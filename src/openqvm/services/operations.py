@@ -8,7 +8,7 @@ from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
 
-from openqvm.core.errors import OpenQVMError
+from openqvm.core.errors import ErrorCode, OpenQVMError
 from openqvm.core.ids import new_id
 from openqvm.core.logging import get_logger
 from openqvm.core.models import OperationRecord, OperationStatus, utc_now_iso
@@ -81,7 +81,10 @@ class OperationLog:
         return self.finish(record, status=OperationStatus.SUCCEEDED, message=message)
 
     def fail(self, record: OperationRecord, error: OpenQVMError) -> OperationRecord:
-        return self.finish(record, status=OperationStatus.FAILED, error=error)
+        status = (
+            OperationStatus.CANCELLED if error.code == ErrorCode.CANCELLED else OperationStatus.FAILED
+        )
+        return self.finish(record, status=status, error=error)
 
     def recent(self, limit: int = 20) -> list[OperationRecord]:
         with self._lock:
