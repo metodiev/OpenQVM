@@ -23,6 +23,8 @@ TOPIC_VM_UPDATED = "vm.updated"
 TOPIC_VM_DELETED = "vm.deleted"
 TOPIC_VM_STATE_CHANGED = "vm.state_changed"
 TOPIC_SNAPSHOTS_CHANGED = "snapshots.changed"
+TOPIC_OPERATION_STARTED = "operation.started"
+TOPIC_OPERATION_PROGRESS = "operation.progress"
 TOPIC_OPERATION_FINISHED = "operation.finished"
 TOPIC_ANY = "*"
 
@@ -32,6 +34,8 @@ ALL_TOPICS = (
     TOPIC_VM_DELETED,
     TOPIC_VM_STATE_CHANGED,
     TOPIC_SNAPSHOTS_CHANGED,
+    TOPIC_OPERATION_STARTED,
+    TOPIC_OPERATION_PROGRESS,
     TOPIC_OPERATION_FINISHED,
 )
 
@@ -65,6 +69,30 @@ class SnapshotEvent:
     vm_id: str
     name: str = ""
     reason: str = ""
+
+
+@dataclass(frozen=True)
+class OperationProgress:
+    """Payload for ``operation.progress``.
+
+    ``fraction`` is ``None`` when the operation cannot estimate the remaining work
+    (for example a single ``qemu-img`` call), which the UI renders as a busy
+    indicator instead of a percentage.
+    """
+
+    action: str
+    fraction: float | None = None
+    message: str = ""
+    vm_id: str | None = None
+    vm_name: str = ""
+
+    @property
+    def percent(self) -> int | None:
+        return None if self.fraction is None else round(self.fraction * 100)
+
+    def describe(self) -> str:
+        label = self.message or self.action
+        return label if self.percent is None else f"{label} — {self.percent} %"
 
 
 class EventBus:

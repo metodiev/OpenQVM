@@ -28,6 +28,7 @@
 | TPM 2.0 | ❌ Not implemented yet; Windows 11 guests warn about this |
 | Real host/VM metrics | ✅ Measured with psutil; unavailable values are labelled |
 | Live UI updates | ✅ Manager events refresh the UI immediately; polling is only a fallback |
+| Operation progress | ✅ Started/progress/finished events drive a determinate status bar and a CLI progress line for create, clone, export, import and disk checks |
 | Cancel long operations | ✅ Cooperative cancellation for create, clone, export, import, disk and snapshot work, with cleanup of partial files |
 | Dark and light themes | ✅ |
 

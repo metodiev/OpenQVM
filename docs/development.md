@@ -138,6 +138,19 @@ window.grab().save("dashboard.png")
 - Never bypass the lock automatically; a forced eject can break a guest that has
   the media mounted.
 
+## Progress reporting
+
+- Operations accept an optional `progress: ProgressCallback`
+  (`openqvm.core.progress`) receiving `(fraction, message)`, where `fraction` is
+  `None` when the remaining work cannot be estimated.
+- `VmManager` republishes every report as `operation.progress`; callers that pass
+  their own callback still receive updates because the publisher composes them.
+- Byte-based work uses `ByteProgress`, which converts handled bytes into a
+  fraction of a fixed total. Exports count the write pass and the verification
+  pass; imports count the manifest's stored bytes.
+- Use `report_progress` for step-based work (one disk of N) rather than inventing
+  percentages, and keep the reports monotonic.
+
 ## Cancelling operations
 
 - Long operations take an optional `cancel: CancellationToken`

@@ -55,6 +55,8 @@ untested platforms are not claimed as verified.
 - [x] Console input: absolute USB pointer, Ctrl+Alt+Del, type-text without a guest agent
 - [x] Cooperative cancellation for long-running exports, imports, clones, disk and
       snapshot operations, with partial-artifact cleanup
+- [x] Operation lifecycle events (`operation.started`, `operation.progress`,
+      `operation.finished`) with byte-accurate progress for exports and imports
 - [ ] Bridged networking (requires privileged helper/bridge configuration)
 - [ ] Host-only networking
 - [ ] TPM 2.0 (swtpm integration)

@@ -10,11 +10,13 @@ import argparse
 import json
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from openqvm import PRODUCT_NAME, PRODUCT_VERSION
 from openqvm.app.context import AppContext
 from openqvm.core.errors import ErrorCode, OpenQVMError, ValidationError
+from openqvm.core.events import TOPIC_OPERATION_PROGRESS, OperationProgress
 from openqvm.core.factory import create_vm_spec
 from openqvm.core.models import (
     DiskBus,
@@ -47,6 +49,30 @@ _EXIT_CODES = {
     ErrorCode.CONFLICT: EXIT_CONFLICT,
     ErrorCode.INVALID_STATE: EXIT_INVALID_STATE,
 }
+
+
+class _ProgressLine:
+    """Render ``operation.progress`` events on stderr for interactive terminals."""
+
+    def __init__(self, manager: VmManager, *, enabled: bool) -> None:
+        self._unsubscribers: list[Callable[[], None]] = []
+        self._width = 0
+        if not enabled or not sys.stderr.isatty():
+            return
+        self._unsubscribers.append(manager.events.subscribe(TOPIC_OPERATION_PROGRESS, self._render))
+
+    def _render(self, event: OperationProgress) -> None:
+        text = event.describe()
+        self._width = max(self._width, len(text))
+        print(f"\r{text:<{self._width}}", end="", file=sys.stderr, flush=True)
+
+    def close(self) -> None:
+        if not self._unsubscribers:
+            return
+        print("\r" + " " * self._width + "\r", end="", file=sys.stderr, flush=True)
+        for unsubscribe in self._unsubscribers:
+            unsubscribe()
+        self._unsubscribers.clear()
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -405,11 +431,15 @@ def _cmd_create(args: argparse.Namespace) -> int:
         description=args.description,
         accelerator=args.accelerator,
     )
-    created = context.manager.create_vm(spec)
-    payload = {"vm": created.to_dict()}
-    if args.start:
-        runtime = context.manager.start_vm(created.id)
-        payload["runtime"] = runtime.to_dict()
+    progress = _ProgressLine(context.manager, enabled=not args.json)
+    try:
+        created = context.manager.create_vm(spec)
+        payload = {"vm": created.to_dict()}
+        if args.start:
+            runtime = context.manager.start_vm(created.id)
+            payload["runtime"] = runtime.to_dict()
+    finally:
+        progress.close()
     _print(
         args,
         payload,
@@ -539,7 +569,11 @@ def _cmd_snapshot_delete(args: argparse.Namespace) -> int:
 def _cmd_clone(args: argparse.Namespace) -> int:
     context = _manager(args)
     spec = _resolve_vm(context.manager, args.vm)
-    result = context.manager.clone_vm(spec.id, args.name)
+    progress = _ProgressLine(context.manager, enabled=not args.json)
+    try:
+        result = context.manager.clone_vm(spec.id, args.name)
+    finally:
+        progress.close()
     payload = {"vm": result.spec.to_dict(), "warnings": result.warnings}
     _print(args, payload, text=f"Cloned '{spec.name}' as '{result.spec.name}' ({result.spec.id}).")
     for warning in result.warnings:
@@ -550,7 +584,13 @@ def _cmd_clone(args: argparse.Namespace) -> int:
 def _cmd_export(args: argparse.Namespace) -> int:
     context = _manager(args)
     spec = _resolve_vm(context.manager, args.vm)
-    result = context.manager.export_vm(spec.id, args.output.expanduser().resolve(), overwrite=args.overwrite)
+    progress = _ProgressLine(context.manager, enabled=not args.json)
+    try:
+        result = context.manager.export_vm(
+            spec.id, args.output.expanduser().resolve(), overwrite=args.overwrite
+        )
+    finally:
+        progress.close()
     payload = {"path": str(result.path), "size_bytes": result.size_bytes, "sha256": result.sha256, "warnings": result.warnings}
     _print(args, payload, text=f"Exported to {result.path} ({human_bytes(result.size_bytes)}).")
     for warning in result.warnings:
@@ -560,7 +600,11 @@ def _cmd_export(args: argparse.Namespace) -> int:
 
 def _cmd_import(args: argparse.Namespace) -> int:
     context = _manager(args)
-    result = context.manager.import_vm(args.package.expanduser().resolve(), new_name=args.name)
+    progress = _ProgressLine(context.manager, enabled=not args.json)
+    try:
+        result = context.manager.import_vm(args.package.expanduser().resolve(), new_name=args.name)
+    finally:
+        progress.close()
     payload = {"vm": result.spec.to_dict(), "warnings": result.warnings}
     _print(args, payload, text=f"Imported '{result.spec.name}' ({result.spec.id}).")
     for warning in result.warnings:

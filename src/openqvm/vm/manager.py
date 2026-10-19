@@ -31,12 +31,15 @@ from openqvm.core.errors import (
 )
 from openqvm.core.events import (
     TOPIC_OPERATION_FINISHED,
+    TOPIC_OPERATION_PROGRESS,
+    TOPIC_OPERATION_STARTED,
     TOPIC_SNAPSHOTS_CHANGED,
     TOPIC_VM_CREATED,
     TOPIC_VM_DELETED,
     TOPIC_VM_STATE_CHANGED,
     TOPIC_VM_UPDATED,
     EventBus,
+    OperationProgress,
     SnapshotEvent,
     VmEvent,
     VmStateEvent,
@@ -46,6 +49,7 @@ from openqvm.core.models import (
     DiskBus,
     DiskFormat,
     DiskSpec,
+    OperationRecord,
     PortForward,
     SnapshotRecord,
     VMRuntime,
@@ -53,6 +57,7 @@ from openqvm.core.models import (
     VMStatus,
 )
 from openqvm.core.paths import AppPaths
+from openqvm.core.progress import ProgressCallback, report_progress
 from openqvm.core.validation import (
     HostResources,
     validate_disk_resize,
@@ -146,11 +151,16 @@ class DiskCheckSummary:
         }
 
 
-def _recorded(action: str) -> Callable[[Callable[..., T]], Callable[..., T]]:
+def _recorded(
+    action: str, *, with_progress: bool = False
+) -> Callable[[Callable[..., T]], Callable[..., T]]:
     def decorator(function: Callable[..., T]) -> Callable[..., T]:
         @functools.wraps(function)
         def wrapper(self: VmManager, vm_id: str, *args: Any, **kwargs: Any) -> T:
             record = self.operations.start(action, vm_id=vm_id, vm_name=self._vm_name_safe(vm_id))
+            self.events.publish(TOPIC_OPERATION_STARTED, replace(record))
+            if with_progress:
+                kwargs["progress"] = self._progress_publisher(record, kwargs.get("progress"))
             try:
                 result = function(self, vm_id, *args, **kwargs)
             except OpenQVMError as exc:
@@ -214,6 +224,27 @@ class VmManager:
 
     def _publish_snapshots(self, vm_id: str, *, name: str = "", reason: str = "") -> None:
         self.events.publish(TOPIC_SNAPSHOTS_CHANGED, SnapshotEvent(vm_id=vm_id, name=name, reason=reason))
+
+    def _progress_publisher(
+        self, record: OperationRecord, callback: ProgressCallback | None = None
+    ) -> ProgressCallback:
+        """Build a progress callback that republishes every report on the event bus."""
+
+        def publish(fraction: float | None, message: str = "") -> None:
+            self.events.publish(
+                TOPIC_OPERATION_PROGRESS,
+                OperationProgress(
+                    action=record.action,
+                    fraction=fraction,
+                    message=message,
+                    vm_id=record.vm_id,
+                    vm_name=record.vm_name,
+                ),
+            )
+            if callback is not None:
+                callback(fraction, message)
+
+        return publish
 
     @staticmethod
     def _vm_busy(runtime: VMRuntime) -> bool:
@@ -327,30 +358,42 @@ class VmManager:
 
     # -- create / update / delete --------------------------------------------
 
-    def create_vm(self, spec: VMSpec, *, cancel: CancellationToken | None = None) -> VMSpec:
+    def create_vm(
+        self,
+        spec: VMSpec,
+        *,
+        cancel: CancellationToken | None = None,
+        progress: ProgressCallback | None = None,
+    ) -> VMSpec:
         record = self.operations.start("Create VM", vm_id=spec.id, vm_name=spec.name)
+        self.events.publish(TOPIC_OPERATION_STARTED, replace(record))
+        report = self._progress_publisher(record, progress)
         try:
             with self._create_lock:
                 self._raise_for_issues(spec)
                 vm_dir = self.store.create_vm_dir(spec.id)
                 try:
-                    for disk in spec.disks:
+                    for index, disk in enumerate(spec.disks, start=1):
                         self.disks.create(self.store.disk_path(spec, disk), disk, cancel=cancel)
+                        report(index / len(spec.disks), f"Creating {disk.filename}")
                     self.store.save_spec(spec)
                     self.store.save_runtime(VMRuntime(vm_id=spec.id))
                 except Exception:
                     shutil.rmtree(vm_dir, ignore_errors=True)
                     raise
-            self.operations.succeed(record)
+            finished = self.operations.succeed(record)
+            self.events.publish(TOPIC_OPERATION_FINISHED, finished)
             log.info("Created VM '%s' (%s)", spec.name, spec.id)
             self._publish_vm(TOPIC_VM_CREATED, spec.id, name=spec.name, reason="created")
             return spec
         except OpenQVMError as exc:
-            self.operations.fail(record, exc)
+            failed = self.operations.fail(record, exc)
+            self.events.publish(TOPIC_OPERATION_FINISHED, failed)
             raise
         except Exception as exc:  # pragma: no cover - defensive
             normalized = error_from_exception(exc, default_message="The virtual machine could not be created.")
-            self.operations.fail(record, normalized)
+            failed = self.operations.fail(record, normalized)
+            self.events.publish(TOPIC_OPERATION_FINISHED, failed)
             raise normalized from exc
 
     def update_vm(self, spec: VMSpec, *, expected_revision: int | None = None) -> VMSpec:
@@ -699,9 +742,14 @@ class VmManager:
             allocated += info.actual_size
         return virtual, allocated
 
-    @_recorded("Check disks")
+    @_recorded("Check disks", with_progress=True)
     def check_disks(
-        self, vm_id: str, *, timeout: float = 1800.0, cancel: CancellationToken | None = None
+        self,
+        vm_id: str,
+        *,
+        timeout: float = 1800.0,
+        cancel: CancellationToken | None = None,
+        progress: ProgressCallback | None = None,
     ) -> DiskCheckSummary:
         """Run ``qemu-img check`` on every disk of a stopped VM.
 
@@ -720,8 +768,9 @@ class VmManager:
                     hint="Shut down the VM first so qemu-img can read the disks safely.",
                 )
             results: list[DiskCheckResult] = []
-            for disk in spec.disks:
+            for index, disk in enumerate(spec.disks, start=1):
                 path = self.store.disk_path(spec, disk)
+                report_progress(progress, None, f"Checking {disk.filename}")
                 try:
                     results.append(self.disks.check(path, timeout=timeout, cancel=cancel))
                 except CancelledError:
@@ -730,6 +779,7 @@ class VmManager:
                     results.append(
                         DiskCheckResult(path=path, ok=False, output=exc.message, error=exc.code.value)
                     )
+                report_progress(progress, index / len(spec.disks), f"Checked {disk.filename}")
             summary = DiskCheckSummary(vm_id=vm_id, results=results)
         if not summary.ok:
             log.warning("Disk check reported problems for VM '%s'", spec.name)
@@ -908,9 +958,14 @@ class VmManager:
 
     # -- clone / export / import ---------------------------------------------
 
-    @_recorded("Clone VM")
+    @_recorded("Clone VM", with_progress=True)
     def clone_vm(
-        self, vm_id: str, new_name: str, *, cancel: CancellationToken | None = None
+        self,
+        vm_id: str,
+        new_name: str,
+        *,
+        cancel: CancellationToken | None = None,
+        progress: ProgressCallback | None = None,
     ) -> CloneResult:
         raise_if_errors(validate_vm_name(new_name), message="The clone name is not valid.")
         with self.store.lock(vm_id, timeout=120):
@@ -927,7 +982,10 @@ class VmManager:
             self._raise_for_issues(clone)
             vm_dir = self.store.create_vm_dir(clone.id)
             try:
-                for source_disk, target_disk in zip(source.disks, clone.disks, strict=True):
+                for index, (source_disk, target_disk) in enumerate(
+                    zip(source.disks, clone.disks, strict=True), start=1
+                ):
+                    report_progress(progress, (index - 1) / len(clone.disks), f"Copying {target_disk.filename}")
                     self.disks.convert(
                         self.store.disk_path(source, source_disk),
                         self.store.disk_path(clone, target_disk),
@@ -935,6 +993,7 @@ class VmManager:
                         preallocated=target_disk.preallocated,
                         cancel=cancel,
                     )
+                    report_progress(progress, index / len(clone.disks), f"Copied {target_disk.filename}")
                 self.store.save_spec(clone)
                 self.store.save_runtime(VMRuntime(vm_id=clone.id))
             except Exception:
@@ -948,7 +1007,7 @@ class VmManager:
             warnings.append("NAT port forwards are not copied to the clone.")
         return CloneResult(spec=clone, warnings=warnings)
 
-    @_recorded("Export VM")
+    @_recorded("Export VM", with_progress=True)
     def export_vm(
         self,
         vm_id: str,
@@ -956,6 +1015,7 @@ class VmManager:
         *,
         overwrite: bool = False,
         cancel: CancellationToken | None = None,
+        progress: ProgressCallback | None = None,
     ) -> ExportResult:
         with self.store.lock(vm_id, timeout=120):
             spec = self.store.load_spec(vm_id)
@@ -965,23 +1025,37 @@ class VmManager:
                     "A running virtual machine cannot be exported.",
                     hint="Shut down the VM so the exported disks are consistent.",
                 )
-            return self.transfer.export_vm(spec, output_path, overwrite=overwrite, cancel=cancel)
+            return self.transfer.export_vm(
+                spec, output_path, overwrite=overwrite, cancel=cancel, progress=progress
+            )
 
     def import_vm(
-        self, package: Path, *, new_name: str | None = None, cancel: CancellationToken | None = None
+        self,
+        package: Path,
+        *,
+        new_name: str | None = None,
+        cancel: CancellationToken | None = None,
+        progress: ProgressCallback | None = None,
     ) -> ImportResult:
         record = self.operations.start("Import VM", vm_name=new_name or package.name)
+        self.events.publish(TOPIC_OPERATION_STARTED, replace(record))
+        reporter = self._progress_publisher(record, progress)
         try:
             with self._create_lock:
-                result = self.transfer.import_vm(package, new_name=new_name, cancel=cancel)
-            self.operations.succeed(record, message=f"Imported '{result.spec.name}'.")
+                result = self.transfer.import_vm(
+                    package, new_name=new_name, cancel=cancel, progress=reporter
+                )
+            finished = self.operations.succeed(record, message=f"Imported '{result.spec.name}'.")
+            self.events.publish(TOPIC_OPERATION_FINISHED, finished)
             return result
         except OpenQVMError as exc:
-            self.operations.fail(record, exc)
+            failed = self.operations.fail(record, exc)
+            self.events.publish(TOPIC_OPERATION_FINISHED, failed)
             raise
         except Exception as exc:  # pragma: no cover - defensive
             normalized = error_from_exception(exc, default_message="The virtual machine could not be imported.")
-            self.operations.fail(record, normalized)
+            failed = self.operations.fail(record, normalized)
+            self.events.publish(TOPIC_OPERATION_FINISHED, failed)
             raise normalized from exc
 
     # -- diagnostics ----------------------------------------------------------

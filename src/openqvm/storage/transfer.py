@@ -32,6 +32,7 @@ from openqvm.core.ids import new_id
 from openqvm.core.logging import get_logger
 from openqvm.core.models import SnapshotRecord, VMSpec, generate_mac, utc_now_iso
 from openqvm.core.paths import AppPaths
+from openqvm.core.progress import ByteProgress, ProgressCallback, report_progress
 from openqvm.core.validation import validate_vm_name
 from openqvm.storage.disks import DiskManager
 from openqvm.store import VmStore
@@ -78,7 +79,19 @@ def suggested_export_name(spec: VMSpec) -> str:
     return f"{_slug(spec.name)}-{stamp}.oqv"
 
 
-def _sha256_file(path: Path, cancel: CancellationToken | None = None) -> HashResult:
+def _file_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def _sha256_file(
+    path: Path,
+    cancel: CancellationToken | None = None,
+    progress: ByteProgress | None = None,
+    message: str = "Verifying the package",
+) -> HashResult:
     digest = hashlib.sha256()
     size = 0
     with path.open("rb") as handle:
@@ -90,6 +103,8 @@ def _sha256_file(path: Path, cancel: CancellationToken | None = None) -> HashRes
                 break
             digest.update(chunk)
             size += len(chunk)
+            if progress is not None:
+                progress.advance(len(chunk), message)
     return HashResult(digest.hexdigest(), size)
 
 
@@ -98,6 +113,8 @@ def _write_entry(
     arcname: str,
     source: Path,
     cancel: CancellationToken | None = None,
+    progress: ByteProgress | None = None,
+    message: str = "",
 ) -> HashResult:
     digest = hashlib.sha256()
     size = 0
@@ -111,6 +128,8 @@ def _write_entry(
             digest.update(chunk)
             size += len(chunk)
             dst.write(chunk)
+            if progress is not None:
+                progress.advance(len(chunk), message or f"Writing {arcname}")
     return HashResult(digest.hexdigest(), size)
 
 
@@ -127,9 +146,11 @@ class VmTransferService:
         *,
         overwrite: bool = False,
         cancel: CancellationToken | None = None,
+        progress: ProgressCallback | None = None,
     ) -> ExportResult:
         if cancel is not None:
             cancel.raise_if_cancelled("The export was cancelled before it started.")
+        report_progress(progress, None, "Inspecting the virtual machine")
         output_path = Path(output_path).expanduser()
         if output_path.suffix.lower() != ".oqv":
             output_path = output_path.with_suffix(".oqv")
@@ -155,6 +176,11 @@ class VmTransferService:
         warnings: list[str] = []
         disk_entries: list[dict[str, object]] = []
         firmware_entries: list[dict[str, object]] = []
+        firmware_vars = self.paths.vm_firmware_dir(spec.id) / "OVMF_VARS.fd"
+        payload_bytes = sum(_file_size(self.store.disk_path(spec, disk)) for disk in spec.disks)
+        payload_bytes += _file_size(firmware_vars)
+        # The package is written once and then hashed, so the work is two passes.
+        tracker = ByteProgress(progress, payload_bytes * 2) if progress is not None else None
         try:
             with zipfile.ZipFile(temp_path, "w", allowZip64=True, compression=zipfile.ZIP_STORED) as archive:
                 for disk in spec.disks:
@@ -164,7 +190,14 @@ class VmTransferService:
                             f"The disk file is missing: {disk.filename}",
                             hint="Run a disk consistency check or restore the VM from a backup.",
                         )
-                    result = _write_entry(archive, f"disks/{disk.filename}", disk_path, cancel)
+                    result = _write_entry(
+                        archive,
+                        f"disks/{disk.filename}",
+                        disk_path,
+                        cancel,
+                        tracker,
+                        f"Writing {disk.filename}",
+                    )
                     disk_entries.append(
                         {
                             "filename": disk.filename,
@@ -177,7 +210,14 @@ class VmTransferService:
 
                 firmware_vars = self.paths.vm_firmware_dir(spec.id) / "OVMF_VARS.fd"
                 if firmware_vars.is_file():
-                    result = _write_entry(archive, "firmware/OVMF_VARS.fd", firmware_vars, cancel)
+                    result = _write_entry(
+                        archive,
+                        "firmware/OVMF_VARS.fd",
+                        firmware_vars,
+                        cancel,
+                        tracker,
+                        "Writing the firmware variables",
+                    )
                     firmware_entries.append(
                         {"filename": "OVMF_VARS.fd", "sha256": result.sha256, "stored_bytes": result.size}
                     )
@@ -202,7 +242,7 @@ class VmTransferService:
                 )
             with temp_path.open("rb+") as handle:
                 os.fsync(handle.fileno())
-            hash_result = _sha256_file(temp_path, cancel)
+            hash_result = _sha256_file(temp_path, cancel, tracker)
             if output_path.exists():
                 output_path.unlink()
             os.replace(temp_path, output_path)
@@ -210,6 +250,8 @@ class VmTransferService:
             temp_path.unlink(missing_ok=True)
             raise
 
+        if tracker is not None:
+            tracker.finish("Package verified")
         if spec.cdrom_iso:
             warnings.append("The attached installation ISO is not included in the package.")
         log.info("Exported VM %s to %s (%s bytes)", spec.name, output_path, hash_result.size)
@@ -221,9 +263,11 @@ class VmTransferService:
         *,
         new_name: str | None = None,
         cancel: CancellationToken | None = None,
+        progress: ProgressCallback | None = None,
     ) -> ImportResult:
         if cancel is not None:
             cancel.raise_if_cancelled("The import was cancelled before it started.")
+        report_progress(progress, None, "Validating the package")
         package = Path(package).expanduser()
         if not package.is_absolute():
             raise ValidationError("The import package must be an absolute path.")
@@ -236,6 +280,9 @@ class VmTransferService:
             with zipfile.ZipFile(package) as archive:
                 manifest = self._read_manifest(archive)
                 spec, records, disk_manifest, firmware_manifest = self._parse_manifest(manifest, archive)
+                total_bytes = sum(int(entry.get("stored_bytes") or 0) for entry in disk_manifest)
+                total_bytes += sum(int(entry.get("stored_bytes") or 0) for entry in firmware_manifest)
+                tracker = ByteProgress(progress, total_bytes) if progress is not None else None
                 self._precheck_archive(archive, spec, disk_manifest, firmware_manifest, cancel)
                 if cancel is not None:
                     cancel.raise_if_cancelled("The import was cancelled.")
@@ -282,6 +329,8 @@ class VmTransferService:
                             staging / "disks" / entry["filename"],
                             f"disks/{entry['filename']}",
                             cancel,
+                            tracker,
+                            f"Extracting {entry['filename']}",
                         )
                         disk_path = staging / "disks" / entry["filename"]
                         info = self.disks.info(disk_path)
@@ -309,6 +358,8 @@ class VmTransferService:
                                 staging / "firmware" / entry["filename"],
                                 f"firmware/{entry['filename']}",
                                 cancel,
+                                tracker,
+                                "Extracting the firmware variables",
                             )
                     for directory in ("logs",):
                         (staging / directory).mkdir(exist_ok=True)
@@ -318,6 +369,9 @@ class VmTransferService:
                 except Exception:
                     shutil.rmtree(staging, ignore_errors=True)
                     raise
+
+                if tracker is not None:
+                    tracker.finish("Registering the virtual machine")
 
                 try:
                     self.store.save_snapshots(spec.id, records)
@@ -468,6 +522,8 @@ class VmTransferService:
         destination: Path,
         archive_name: str,
         cancel: CancellationToken | None = None,
+        progress: ByteProgress | None = None,
+        message: str = "",
     ) -> None:
         destination = Path(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -485,6 +541,8 @@ class VmTransferService:
                     raise SecurityError("The package entry is too large.")
                 digest.update(chunk)
                 dst.write(chunk)
+                if progress is not None:
+                    progress.advance(len(chunk), message or f"Extracting {archive_name}")
             dst.flush()
             os.fsync(dst.fileno())
         if not hmac.compare_digest(digest.hexdigest(), entry["sha256"]):

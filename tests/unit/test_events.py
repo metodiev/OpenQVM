@@ -104,3 +104,14 @@ def test_clear_removes_every_subscription():
     assert bus.subscriber_count() == len(ALL_TOPICS)
     bus.clear()
     assert bus.subscriber_count() == 0
+
+def test_operation_progress_describes_percentages():
+    from openqvm.core.events import TOPIC_OPERATION_PROGRESS, OperationProgress
+
+    assert TOPIC_OPERATION_PROGRESS in ALL_TOPICS
+    event = OperationProgress(action="Export VM", fraction=0.426, message="Writing disk.qcow2")
+    assert event.percent == 43
+    assert event.describe() == "Writing disk.qcow2 — 43 %"
+    assert OperationProgress(action="Export VM").describe() == "Export VM"
+    assert OperationProgress(action="Export VM", message="Inspecting").percent is None
+    assert OperationProgress(action="Export VM", message="Inspecting").describe() == "Inspecting"

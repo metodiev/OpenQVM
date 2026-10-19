@@ -174,7 +174,10 @@ implemented. The UI explains the security implications of each mode.
   `unknown`; destructive disk operations are refused until the process is
   stopped.
 - Long operations (boot, export, disk creation) surface progress or a busy
-  indicator, and errors include a code, hint and log excerpt.
+  indicator, and errors include a code, hint and log excerpt. `operation.started`
+  and `operation.progress` events carry the action, an optional 0-1 fraction and a
+  human-readable phase; the GUI shows a determinate bar when a fraction is known
+  and the CLI renders the same events on stderr.
 - Long-running work accepts a ``CancellationToken`` (``openqvm.core.cancellation``).
   The GUI's ``AsyncRunner`` creates one token per job and exposes the Cancel
   button in the status bar; ``run_tool`` polls its child process every 200 ms and

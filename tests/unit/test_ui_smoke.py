@@ -211,3 +211,45 @@ def test_wizard_cancel_stops_the_creation_instead_of_closing(tmp_path, qapp):
         wizard.deleteLater()
         qapp.processEvents()
         context.close()
+
+@pytest.mark.gui
+def test_main_window_shows_determinate_progress(tmp_path, qapp):
+    import threading
+
+    from openqvm.core.events import TOPIC_OPERATION_PROGRESS, OperationProgress
+    from openqvm.ui.main_window import MainWindow
+
+    context = AppContext.create(data_dir=tmp_path / "data")
+    window = MainWindow(context)
+    started = threading.Event()
+
+    def work(token):
+        started.set()
+        token.sleep(30)
+        token.raise_if_cancelled()
+        return "done"
+
+    try:
+        window._run("Exporting virtual machine", work)
+        assert started.wait(5)
+
+        context.manager.events.publish(
+            TOPIC_OPERATION_PROGRESS,
+            OperationProgress(action="Export VM", fraction=0.42, message="Writing disk.qcow2"),
+        )
+        assert _wait_until(qapp, lambda: window.progress.maximum() == 100)
+        assert window.progress.value() == 42
+        assert window.status_message.text() == "Writing disk.qcow2 — 42 %"
+
+        context.manager.events.publish(
+            TOPIC_OPERATION_PROGRESS,
+            OperationProgress(action="Export VM", fraction=None, message="Verifying the package"),
+        )
+        assert _wait_until(qapp, lambda: window.progress.maximum() == 0)
+        assert window.status_message.text() == "Verifying the package"
+    finally:
+        window.runner.cancel_active()
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+        context.close()

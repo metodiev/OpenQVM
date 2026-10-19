@@ -44,6 +44,14 @@ class FakeDisks:
     def resize(self, path, disk, new_size, *, cancel=None):
         return DiskInfo(path, "qcow2", new_size, 2048, None)
 
+    def convert(self, source, destination, *, target_format=None, preallocated=False, cancel=None):
+        if cancel is not None:
+            cancel.raise_if_cancelled("The disk conversion was cancelled.")
+        destination = Path(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(Path(source).read_bytes())
+        return DiskInfo(destination, (target_format.value if target_format else "qcow2"), 20 * 1024**3, 1024, None)
+
     def delete(self, path):
         Path(path).unlink(missing_ok=True)
 
@@ -433,3 +441,92 @@ def test_check_disks_propagates_cancellation_instead_of_reporting_a_failure(mana
         manager.check_disks(spec.id, cancel=cancelled_token())
     summaries, _errors = manager.list_summaries(refresh=True)
     assert len(summaries) == 1
+
+# -- operation lifecycle and progress events ---------------------------------
+
+
+def _collect(manager, topic):
+    received: list = []
+    manager.events.subscribe(topic, received.append)
+    return received
+
+
+def test_create_publishes_started_progress_and_finished(manager):
+    from openqvm.core.events import (
+        TOPIC_OPERATION_FINISHED,
+        TOPIC_OPERATION_PROGRESS,
+        TOPIC_OPERATION_STARTED,
+    )
+
+    started = _collect(manager, TOPIC_OPERATION_STARTED)
+    finished = _collect(manager, TOPIC_OPERATION_FINISHED)
+    progress = _collect(manager, TOPIC_OPERATION_PROGRESS)
+
+    manager.create_vm(_spec())
+
+    assert [record.status.value for record in started] == ["running"]
+    assert [record.status.value for record in finished] == ["succeeded"]
+    assert [event.fraction for event in progress] == [1.0]
+    assert progress[0].action == "Create VM"
+
+
+def test_failed_create_still_publishes_a_finished_event(manager):
+    from openqvm.core.events import TOPIC_OPERATION_FINISHED
+
+    finished = _collect(manager, TOPIC_OPERATION_FINISHED)
+    manager.create_vm(_spec())
+    with pytest.raises(ValidationError):
+        manager.create_vm(_spec())
+    assert [record.status.value for record in finished] == ["succeeded", "failed"]
+    assert finished[-1].error_code == "validation_failed"
+
+
+def test_export_reports_monotonic_progress(manager, tmp_path):
+    from openqvm.core.events import TOPIC_OPERATION_PROGRESS
+
+    spec = manager.create_vm(_spec())
+    events = _collect(manager, TOPIC_OPERATION_PROGRESS)
+    manager.export_vm(spec.id, tmp_path / "package.oqv")
+
+    assert events[0].fraction is None, "the first report is the indeterminate inspection phase"
+    fractions = [event.fraction for event in events if event.fraction is not None]
+    assert fractions == sorted(fractions)
+    assert fractions[-1] == 1.0
+    assert any(event.message.startswith("Writing") for event in events)
+    assert events[-1].message == "Package verified"
+
+
+def test_import_reports_progress_until_registration(manager, tmp_path):
+    from openqvm.core.events import TOPIC_OPERATION_PROGRESS
+
+    spec = manager.create_vm(_spec())
+    package = tmp_path / "package.oqv"
+    manager.export_vm(spec.id, package)
+
+    events = _collect(manager, TOPIC_OPERATION_PROGRESS)
+    manager.import_vm(package)
+
+    fractions = [event.fraction for event in events if event.fraction is not None]
+    assert fractions == sorted(fractions)
+    assert fractions[-1] == 1.0
+    assert events[-1].message == "Registering the virtual machine"
+
+
+def test_clone_reports_per_disk_progress(manager):
+    from openqvm.core.events import TOPIC_OPERATION_PROGRESS
+
+    spec = manager.create_vm(_spec())
+    events = _collect(manager, TOPIC_OPERATION_PROGRESS)
+    manager.clone_vm(spec.id, "Managed VM clone")
+
+    assert [event.fraction for event in events] == [0.0, 1.0]
+    assert events[-1].message.startswith("Copied")
+
+
+def test_caller_progress_callbacks_still_receive_updates(manager):
+    spec = manager.create_vm(_spec())
+    seen: list[float | None] = []
+    manager.clone_vm(
+        spec.id, "Managed VM clone", progress=lambda fraction, _message: seen.append(fraction)
+    )
+    assert seen == [0.0, 1.0]

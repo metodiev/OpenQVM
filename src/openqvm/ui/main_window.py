@@ -30,7 +30,12 @@ from openqvm import PRODUCT_NAME, PRODUCT_VERSION
 from openqvm.app.context import AppContext
 from openqvm.core.cancellation import CancellationToken
 from openqvm.core.errors import ErrorCode, OpenQVMError
-from openqvm.core.events import ALL_TOPICS, TOPIC_SNAPSHOTS_CHANGED
+from openqvm.core.events import (
+    ALL_TOPICS,
+    TOPIC_OPERATION_PROGRESS,
+    TOPIC_SNAPSHOTS_CHANGED,
+    OperationProgress,
+)
 from openqvm.core.logging import get_logger
 from openqvm.core.models import VMStatus
 from openqvm.storage.transfer import suggested_export_name
@@ -102,11 +107,26 @@ class MainWindow(QMainWindow):
             )
 
     def _on_event(self, topic: str, payload) -> None:  # type: ignore[no-untyped-def]
+        if topic == TOPIC_OPERATION_PROGRESS:
+            self._show_progress(payload)
+            return
         self._refresh_pending = True
         self._refresh_timer.start()
         if topic == TOPIC_SNAPSHOTS_CHANGED and self.stack.currentIndex() == PAGE_DETAILS:
             if getattr(payload, "vm_id", None) == self.details.vm_id:
                 self.details.reload_snapshots()
+
+    def _show_progress(self, event: OperationProgress) -> None:
+        """Show a determinate bar when the operation reports a fraction."""
+
+        if self.runner.active_count == 0:
+            return
+        self.status_message.setText(event.describe())
+        if event.percent is None:
+            self.progress.setRange(0, 0)
+        else:
+            self.progress.setRange(0, 100)
+            self.progress.setValue(event.percent)
 
     def _apply_pending_refresh(self) -> None:
         if not self._refresh_pending:
@@ -319,6 +339,8 @@ class MainWindow(QMainWindow):
         self._update_backend_chip()
 
     def _on_busy(self, busy: bool, description: str) -> None:
+        self.progress.setRange(0, 0)
+        self.progress.setValue(0)
         self.progress.setVisible(busy)
         self.cancel_button.setEnabled(True)
         self.cancel_button.setVisible(busy)
