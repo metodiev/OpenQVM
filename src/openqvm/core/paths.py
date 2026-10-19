@@ -40,7 +40,15 @@ class AppPaths:
         return cls(_default_data_root())
 
     def ensure(self) -> None:
-        for directory in (self.root, self.vms_dir, self.logs_dir, self.isos_dir, self.trash_dir, self.exports_dir):
+        for directory in (
+            self.root,
+            self.vms_dir,
+            self.logs_dir,
+            self.isos_dir,
+            self.trash_dir,
+            self.exports_dir,
+            self.backups_dir,
+        ):
             directory.mkdir(parents=True, exist_ok=True)
 
     @property
@@ -58,6 +66,10 @@ class AppPaths:
     @property
     def exports_dir(self) -> Path:
         return self.root / "exports"
+
+    @property
+    def backups_dir(self) -> Path:
+        return self.root / "backups"
 
     @property
     def trash_dir(self) -> Path:
@@ -102,6 +114,9 @@ class AppPaths:
 
     def vm_snapshots_file(self, vm_id: str) -> Path:
         return self.vm_dir(vm_id) / "snapshots.json"
+
+    def vm_backups_file(self, vm_id: str) -> Path:
+        return self.vm_dir(vm_id) / "backups.json"
 
     def vm_lock_file(self, vm_id: str) -> Path:
         # Locks live outside the VM directory so that the directory can be moved

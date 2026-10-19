@@ -151,6 +151,12 @@ keyboard mapping and therefore works without a guest agent. The RTC uses
   anything.
 - Clone requires a stopped VM and uses `qemu-img convert`; snapshot history is
   not copied.
+- Backups reuse the export writer: `BackupPolicy` decides when a stopped VM is
+  due, `VmManager.backup_vm` writes a timestamped package and rewrites
+  `backups.json`, and the retention window deletes the oldest packages. The
+  scheduler lives in the GUI (a timer plus one check after startup) and in
+  `openqvm-cli backup --due`; both call the same manager method, which publishes
+  `backups.changed` so open pages refresh without polling.
 
 ### 3.7 Networking
 

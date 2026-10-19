@@ -253,3 +253,33 @@ def test_main_window_shows_determinate_progress(tmp_path, qapp):
         window.deleteLater()
         qapp.processEvents()
         context.close()
+
+@pytest.mark.gui
+def test_settings_page_persists_the_backup_policy(tmp_path, qapp):
+    from openqvm.ui.main_window import MainWindow
+
+    context = AppContext.create(data_dir=tmp_path / "data")
+    window = MainWindow(context)
+    try:
+        page = window.settings_page
+        page.backup_enabled.setChecked(True)
+        page.backup_interval.setValue(6)
+        page.backup_keep.setValue(2)
+        page.backup_dir.setText(str(tmp_path / "backups"))
+        page.backup_dir.editingFinished.emit()
+
+        stored = context.settings_store.load()
+        assert stored.backup_enabled is True
+        assert stored.backup_interval_hours == 6
+        assert stored.backup_keep == 2
+        assert stored.backup_dir == str(tmp_path / "backups")
+        assert context.backup_policy().directory == tmp_path / "backups"
+        assert window._backup_timer.isActive()
+
+        page.backup_enabled.setChecked(False)
+        assert not window._backup_timer.isActive()
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+        context.close()

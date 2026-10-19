@@ -28,7 +28,12 @@ from openqvm.core.errors import CorruptDataError, NotFoundError, OperationFailed
 from openqvm.core.ids import is_uuid
 from openqvm.core.locking import FileLock
 from openqvm.core.models import (
+    DEFAULT_BACKUP_INTERVAL_HOURS,
+    DEFAULT_BACKUP_KEEP,
+    MAX_BACKUP_INTERVAL_HOURS,
+    MAX_BACKUP_KEEP,
     SCHEMA_VERSION,
+    BackupEntry,
     DiskSpec,
     SnapshotRecord,
     VMRuntime,
@@ -201,6 +206,36 @@ class VmStore:
         }
         atomic_write_json(self.paths.vm_snapshots_file(vm_id), payload)
 
+    # -- backups --------------------------------------------------------------
+
+    def load_backups(self, vm_id: str) -> list[BackupEntry]:
+        backup_file = self.paths.vm_backups_file(vm_id)
+        if not backup_file.is_file():
+            return []
+        data = read_json(backup_file)
+        if isinstance(data, dict):
+            data = data.get("backups", [])
+        if not isinstance(data, list):
+            raise CorruptDataError(
+                "The backup metadata is invalid.",
+                details={"file": str(backup_file)},
+            )
+        try:
+            return [BackupEntry.from_dict(item) for item in data]
+        except ValidationError as exc:
+            raise CorruptDataError(
+                "The backup metadata is invalid.",
+                details={"file": str(backup_file)},
+                cause=exc,
+            ) from exc
+
+    def save_backups(self, vm_id: str, entries: list[BackupEntry]) -> None:
+        payload = {
+            "schema_version": SCHEMA_VERSION,
+            "backups": [entry.to_dict() for entry in entries],
+        }
+        atomic_write_json(self.paths.vm_backups_file(vm_id), payload)
+
     # -- paths ----------------------------------------------------------------
 
     def disk_path(self, spec: VMSpec, disk: DiskSpec) -> Path:
@@ -299,11 +334,21 @@ class AppSettings:
     qemu_dir: str | None = None
     console_fit: bool = True
     last_page: str = "dashboard"
+    backup_enabled: bool = False
+    backup_interval_hours: int = DEFAULT_BACKUP_INTERVAL_HOURS
+    backup_keep: int = DEFAULT_BACKUP_KEEP
+    backup_dir: str | None = None
     schema_version: int = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
         if self.theme not in {"dark", "light"}:
             raise ValidationError("Theme must be dark or light.")
+        if not 1 <= self.backup_interval_hours <= MAX_BACKUP_INTERVAL_HOURS:
+            raise ValidationError(
+                f"The backup interval must be between 1 and {MAX_BACKUP_INTERVAL_HOURS} hours."
+            )
+        if not 1 <= self.backup_keep <= MAX_BACKUP_KEEP:
+            raise ValidationError(f"Between 1 and {MAX_BACKUP_KEEP} backups can be kept per VM.")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -312,6 +357,10 @@ class AppSettings:
             "qemu_dir": self.qemu_dir,
             "console_fit": self.console_fit,
             "last_page": self.last_page,
+            "backup_enabled": self.backup_enabled,
+            "backup_interval_hours": self.backup_interval_hours,
+            "backup_keep": self.backup_keep,
+            "backup_dir": self.backup_dir,
         }
 
     @classmethod
@@ -324,10 +373,19 @@ class AppSettings:
         qemu_dir = data.get("qemu_dir")
         if qemu_dir is not None and not isinstance(qemu_dir, str):
             raise ValidationError("qemu_dir must be a string or null.")
+        backup_dir = data.get("backup_dir")
+        if backup_dir is not None and not isinstance(backup_dir, str):
+            raise ValidationError("backup_dir must be a string or null.")
         return cls(
             theme=theme,
             qemu_dir=qemu_dir or None,
             console_fit=bool(data.get("console_fit", True)),
             last_page=str(data.get("last_page", "dashboard")),
+            backup_enabled=bool(data.get("backup_enabled", False)),
+            backup_interval_hours=int(
+                data.get("backup_interval_hours", DEFAULT_BACKUP_INTERVAL_HOURS)
+            ),
+            backup_keep=int(data.get("backup_keep", DEFAULT_BACKUP_KEEP)),
+            backup_dir=backup_dir or None,
             schema_version=int(data.get("schema_version", SCHEMA_VERSION)),
         )

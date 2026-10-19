@@ -84,6 +84,8 @@ class VmDetailsPage(QWidget):
         self.spec: VMSpec | None = None
         self.runtime = None
         self._snapshot_views: list[SnapshotView] = []
+        self._backup_entries: list = []
+        self._backup_error = ""
         self._qemu_tail = LogTail(Path())
         self._serial_tail = LogTail(Path())
         self._build()
@@ -401,6 +403,45 @@ class VmDetailsPage(QWidget):
         actions.addWidget(self.refresh_snapshot_button)
         card_layout.addLayout(actions)
         layout.addWidget(card)
+
+        backup_card = Card()
+        backup_layout = QVBoxLayout(backup_card)
+        backup_layout.setContentsMargins(16, 16, 16, 16)
+        backup_title = QLabel("Backups")
+        backup_title.setProperty("role", "h3")
+        backup_layout.addWidget(backup_title)
+        backup_explanation = QLabel(
+            "A backup is a complete .oqv package of this VM written to the backup folder. Backups are "
+            "taken while the VM is stopped; restore one by importing the package."
+        )
+        backup_explanation.setWordWrap(True)
+        backup_explanation.setProperty("role", "muted")
+        backup_layout.addWidget(backup_explanation)
+        self.backup_table = QTableWidget(0, 4)
+        self.backup_table.setHorizontalHeaderLabels(["Created", "Reason", "Size", "File"])
+        self.backup_table.verticalHeader().setVisible(False)
+        self.backup_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.backup_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        backup_header = self.backup_table.horizontalHeader()
+        for column in (0, 1, 2):
+            backup_header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        backup_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.backup_table.setMinimumHeight(140)
+        backup_layout.addWidget(self.backup_table)
+        backup_actions = QHBoxLayout()
+        self.backup_now_button = QPushButton("Back up now")
+        self.backup_now_button.setProperty("variant", "primary")
+        self.backup_now_button.clicked.connect(self._backup_now)
+        self.refresh_backups_button = QPushButton("Refresh")
+        self.refresh_backups_button.clicked.connect(self._load_backups)
+        open_backups = QPushButton("Open backup folder")
+        open_backups.clicked.connect(self._open_backup_folder)
+        backup_actions.addWidget(self.backup_now_button)
+        backup_actions.addStretch(1)
+        backup_actions.addWidget(self.refresh_backups_button)
+        backup_actions.addWidget(open_backups)
+        backup_layout.addLayout(backup_actions)
+        layout.addWidget(backup_card)
         layout.addStretch(1)
         return page
 
@@ -497,6 +538,7 @@ class VmDetailsPage(QWidget):
         self._populate_storage()
         self._populate_network()
         self._load_snapshots()
+        self._load_backups()
         self._load_logs()
 
     def refresh_runtime(self) -> None:
@@ -703,6 +745,57 @@ class VmDetailsPage(QWidget):
 
     def the_snapshot_is_missing(self) -> bool:
         return any(not view.present for view in self._snapshot_views)
+
+    def _load_backups(self) -> None:
+        if not self.vm_id:
+            return
+        try:
+            self._backup_entries = self.context.manager.list_backups(self.vm_id)
+        except OpenQVMError as exc:
+            self._backup_entries = []
+            self._backup_error = exc.message
+        else:
+            self._backup_error = ""
+        self.backup_table.setRowCount(len(self._backup_entries))
+        for row, entry in enumerate(self._backup_entries):
+            created = QTableWidgetItem(format_datetime(entry.created_at))
+            created.setToolTip(entry.path)
+            self.backup_table.setItem(row, 0, created)
+            self.backup_table.setItem(row, 1, QTableWidgetItem(entry.reason))
+            self.backup_table.setItem(row, 2, QTableWidgetItem(human_bytes(entry.size_bytes)))
+            file_item = QTableWidgetItem(entry.filename)
+            file_item.setToolTip(entry.path)
+            file_item.setData(Qt.ItemDataRole.UserRole, entry.path)
+            self.backup_table.setItem(row, 3, file_item)
+        self.backup_now_button.setEnabled(not self._busy)
+        if self._backup_error:
+            self.snapshot_banner.show_message(self._backup_error, severity="warning")
+
+    def reload_backups(self) -> None:
+        self._load_backups()
+
+    def _open_backup_folder(self) -> None:
+        policy = self.context.backup_policy()
+        open_folder(policy.directory)
+
+    def _backup_now(self) -> None:
+        if not self.vm_id:
+            return
+        policy = self.context.backup_policy()
+        vm_id = self.vm_id
+        self._run(
+            "Backing up virtual machine",
+            lambda token: self.context.manager.backup_vm(
+                vm_id, keep=policy.keep, destination=policy.directory, cancel=token
+            ),
+            on_success=self._backup_done,
+        )
+
+    def _backup_done(self, result) -> None:  # type: ignore[no-untyped-def]
+        message = f"Backup written to {result.path.name}."
+        if result.pruned:
+            message += f" Removed {len(result.pruned)} old backup(s)."
+        self.snapshot_banner.show_message(message, severity="success")
 
     def _load_logs(self) -> None:
         if not self.vm_id:

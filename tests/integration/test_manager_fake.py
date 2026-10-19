@@ -530,3 +530,126 @@ def test_caller_progress_callbacks_still_receive_updates(manager):
         spec.id, "Managed VM clone", progress=lambda fraction, _message: seen.append(fraction)
     )
     assert seen == [0.0, 1.0]
+
+# -- backups -----------------------------------------------------------------
+
+
+def _backup_policy(tmp_path, **overrides):
+    from openqvm.services.backups import BackupPolicy
+
+    values = {"directory": tmp_path / "backups", "enabled": True, "interval_hours": 24, "keep": 3}
+    values.update(overrides)
+    return BackupPolicy(**values)
+
+
+def test_backup_creates_a_package_and_index_entry(manager, tmp_path):
+    from openqvm.core.events import TOPIC_BACKUPS_CHANGED
+
+    spec = manager.create_vm(_spec())
+    events = _collect(manager, TOPIC_BACKUPS_CHANGED)
+
+    result = manager.backup_vm(spec.id, destination=tmp_path / "backups", keep=3)
+
+    assert result.path.is_file()
+    assert result.path.parent == tmp_path / "backups"
+    entries = manager.list_backups(spec.id)
+    assert [entry.path for entry in entries] == [str(result.path)]
+    assert entries[0].vm_id == spec.id
+    assert entries[0].size_bytes > 0
+    assert entries[0].reason == "manual"
+    assert len(entries[0].sha256) == 64
+    assert events[-1].reason == "created"
+    assert events[-1].path == str(result.path)
+
+
+def test_backup_retention_removes_old_packages(manager, tmp_path):
+    manager.disks.on_create = None
+    spec = manager.create_vm(_spec())
+    backups = tmp_path / "backups"
+
+    first = manager.backup_vm(spec.id, destination=backups, keep=2)
+    second = manager.backup_vm(spec.id, destination=backups, keep=2)
+    third = manager.backup_vm(spec.id, destination=backups, keep=2)
+
+    assert not first.path.exists()
+    assert second.path.exists() and third.path.exists()
+    assert third.pruned == [str(first.path)]
+    assert [entry.path for entry in manager.list_backups(spec.id)] == [
+        str(third.path),
+        str(second.path),
+    ]
+
+
+def test_backup_refuses_a_running_vm(manager, tmp_path):
+    spec = manager.create_vm(_spec())
+    manager.start_vm(spec.id)
+    with pytest.raises(InvalidStateError, match="running"):
+        manager.backup_vm(spec.id, destination=tmp_path / "backups")
+    assert manager.list_backups(spec.id) == []
+    manager.stop_vm(spec.id, force=True)
+
+
+def test_cancelled_backup_leaves_no_package_or_entry(manager, tmp_path):
+    spec = manager.create_vm(_spec())
+    backups = tmp_path / "backups"
+    with pytest.raises(CancelledError):
+        manager.backup_vm(spec.id, destination=backups, cancel=cancelled_token())
+    assert list(backups.glob("*.oqv")) == []
+    assert manager.list_backups(spec.id) == []
+
+
+def test_scheduled_backups_only_create_due_ones(manager, tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    spec = manager.create_vm(_spec())
+    policy = _backup_policy(tmp_path)
+    now = datetime.now(UTC)
+
+    first = manager.run_scheduled_backups(policy, now=now)
+    assert first.created == 1
+    assert first.errors == []
+    assert first.results[0].entry.reason == "scheduled"
+    assert first.results[0].path.is_file()
+
+    again = manager.run_scheduled_backups(policy, now=now + timedelta(hours=1))
+    assert again.created == 0
+    assert again.errors == []
+
+    later = manager.run_scheduled_backups(policy, now=now + timedelta(hours=25))
+    assert later.created == 1
+    assert len(manager.list_backups(spec.id)) == 2
+
+
+def test_scheduled_backups_skip_running_vms_and_disabled_policies(manager, tmp_path):
+    spec = manager.create_vm(_spec())
+    manager.start_vm(spec.id)
+    run = manager.run_scheduled_backups(_backup_policy(tmp_path))
+    assert run.created == 0
+    assert run.skipped == [spec.name]
+    manager.stop_vm(spec.id, force=True)
+
+    disabled = _backup_policy(tmp_path, enabled=False)
+    assert manager.run_scheduled_backups(disabled).created == 0
+    assert manager.list_backups(spec.id) == []
+
+
+def test_backup_operations_publish_lifecycle_events(manager, tmp_path):
+    from openqvm.core.events import TOPIC_OPERATION_FINISHED, TOPIC_OPERATION_STARTED
+
+    spec = manager.create_vm(_spec())
+    started = _collect(manager, TOPIC_OPERATION_STARTED)
+    finished = _collect(manager, TOPIC_OPERATION_FINISHED)
+    manager.backup_vm(spec.id, destination=tmp_path / "backups")
+
+    assert started[-1].action == "Back up VM"
+    assert finished[-1].action == "Back up VM"
+    assert finished[-1].status.value == "succeeded"
+
+
+def test_corrupt_backup_index_is_reported(manager):
+    from openqvm.core.errors import CorruptDataError
+
+    spec = manager.create_vm(_spec())
+    manager.paths.vm_backups_file(spec.id).write_text("{not json", encoding="utf-8")
+    with pytest.raises(CorruptDataError):
+        manager.list_backups(spec.id)

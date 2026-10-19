@@ -11,12 +11,18 @@ import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 from openqvm.core.errors import ValidationError
 from openqvm.core.ids import is_uuid, new_id
 
 SCHEMA_VERSION = 1
+
+DEFAULT_BACKUP_INTERVAL_HOURS = 24
+DEFAULT_BACKUP_KEEP = 3
+MAX_BACKUP_KEEP = 50
+MAX_BACKUP_INTERVAL_HOURS = 24 * 365
 
 
 def utc_now() -> datetime:
@@ -740,6 +746,52 @@ class SnapshotRecord:
             vm_state=_str(mapping, "vm_state", context="snapshot"),
             disks=[str(item) for item in _list(mapping.get("disks", []), "snapshot.disks")],
         )
+
+
+@dataclass
+class BackupEntry:
+    """One recorded backup package."""
+
+    path: str
+    vm_id: str
+    vm_name: str
+    created_at: str = field(default_factory=utc_now_iso)
+    size_bytes: int = 0
+    sha256: str = ""
+    reason: str = "manual"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "path": self.path,
+            "vm_id": self.vm_id,
+            "vm_name": self.vm_name,
+            "created_at": self.created_at,
+            "size_bytes": self.size_bytes,
+            "sha256": self.sha256,
+            "reason": self.reason,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> BackupEntry:
+        mapping = _mapping(data, "backup")
+        size = mapping.get("size_bytes", 0)
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            raise ValidationError("The backup entry has an invalid size.")
+        return cls(
+            path=_str(mapping, "path", context="backup"),
+            vm_id=_str(mapping, "vm_id", context="backup"),
+            vm_name=_str(mapping, "vm_name", context="backup"),
+            created_at=parse_timestamp(
+                mapping.get("created_at") or utc_now_iso(), field_name="backup.created_at"
+            ),
+            size_bytes=size,
+            sha256=_opt_str(mapping, "sha256", context="backup") or "",
+            reason=_opt_str(mapping, "reason", context="backup") or "manual",
+        )
+
+    @property
+    def filename(self) -> str:
+        return Path(self.path).name
 
 
 @dataclass

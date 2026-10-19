@@ -30,6 +30,7 @@ from openqvm.core.errors import (
     raise_if_errors,
 )
 from openqvm.core.events import (
+    TOPIC_BACKUPS_CHANGED,
     TOPIC_OPERATION_FINISHED,
     TOPIC_OPERATION_PROGRESS,
     TOPIC_OPERATION_STARTED,
@@ -38,6 +39,7 @@ from openqvm.core.events import (
     TOPIC_VM_DELETED,
     TOPIC_VM_STATE_CHANGED,
     TOPIC_VM_UPDATED,
+    BackupEvent,
     EventBus,
     OperationProgress,
     SnapshotEvent,
@@ -46,6 +48,8 @@ from openqvm.core.events import (
 )
 from openqvm.core.logging import get_logger
 from openqvm.core.models import (
+    MAX_BACKUP_KEEP,
+    BackupEntry,
     DiskBus,
     DiskFormat,
     DiskSpec,
@@ -68,6 +72,14 @@ from openqvm.core.validation import (
 from openqvm.networking import security_note
 from openqvm.platform.capabilities import PlatformCapabilities
 from openqvm.platform.compatibility import check_compatibility
+from openqvm.services.backups import (
+    BackupPolicy,
+    BackupResult,
+    BackupRun,
+    backups_to_prune,
+    is_due,
+    unique_backup_path,
+)
 from openqvm.services.operations import OperationLog
 from openqvm.snapshots import SnapshotService, SnapshotTagInfo
 from openqvm.storage.disks import DiskCheckResult, DiskManager
@@ -224,6 +236,13 @@ class VmManager:
 
     def _publish_snapshots(self, vm_id: str, *, name: str = "", reason: str = "") -> None:
         self.events.publish(TOPIC_SNAPSHOTS_CHANGED, SnapshotEvent(vm_id=vm_id, name=name, reason=reason))
+
+    def _publish_backups(
+        self, vm_id: str, *, name: str = "", reason: str = "", path: str = ""
+    ) -> None:
+        self.events.publish(
+            TOPIC_BACKUPS_CHANGED, BackupEvent(vm_id=vm_id, name=name, reason=reason, path=path)
+        )
 
     def _progress_publisher(
         self, record: OperationRecord, callback: ProgressCallback | None = None
@@ -1058,11 +1077,123 @@ class VmManager:
             self.events.publish(TOPIC_OPERATION_FINISHED, failed)
             raise normalized from exc
 
+    # -- backups --------------------------------------------------------------
+
+    def list_backups(self, vm_id: str) -> list[BackupEntry]:
+        """Recorded backups for *vm_id*, newest first."""
+
+        return sorted(
+            self.store.load_backups(vm_id), key=lambda entry: entry.created_at, reverse=True
+        )
+
+    @_recorded("Back up VM", with_progress=True)
+    def backup_vm(
+        self,
+        vm_id: str,
+        *,
+        keep: int = MAX_BACKUP_KEEP,
+        destination: Path | None = None,
+        reason: str = "manual",
+        cancel: CancellationToken | None = None,
+        progress: ProgressCallback | None = None,
+    ) -> BackupResult:
+        """Export a stopped VM to a timestamped package and prune older ones."""
+
+        if not 1 <= keep <= MAX_BACKUP_KEEP:
+            raise ValidationError(f"Between 1 and {MAX_BACKUP_KEEP} backups can be kept per VM.")
+        with self.store.lock(vm_id, timeout=120):
+            spec = self.store.load_spec(vm_id)
+            runtime = self.backend.refresh(spec, self.store.load_runtime(vm_id))
+            if self._vm_busy(runtime):
+                raise InvalidStateError(
+                    "A running virtual machine cannot be backed up.",
+                    hint="Shut down the VM so the backup contains consistent disks.",
+                )
+            directory = Path(destination) if destination is not None else self.paths.backups_dir
+            directory.mkdir(parents=True, exist_ok=True)
+            target = unique_backup_path(directory, spec.name, spec.id, datetime.now(UTC))
+            export = self.transfer.export_vm(spec, target, cancel=cancel, progress=progress)
+            entry = BackupEntry(
+                path=str(export.path),
+                vm_id=spec.id,
+                vm_name=spec.name,
+                created_at=datetime.now(UTC).isoformat(timespec="microseconds"),
+                size_bytes=export.size_bytes,
+                sha256=export.sha256,
+                reason=reason,
+            )
+            entries = self.store.load_backups(vm_id)
+            entries.append(entry)
+            pruned_entries = backups_to_prune(entries, keep)
+            pruned_paths = {item.path for item in pruned_entries}
+            self.store.save_backups(
+                vm_id, [item for item in entries if item.path not in pruned_paths]
+            )
+
+        pruned: list[str] = []
+        for stale in pruned_entries:
+            try:
+                Path(stale.path).unlink(missing_ok=True)
+                pruned.append(stale.path)
+            except OSError:
+                log.warning("The old backup %s could not be removed", stale.path)
+        log.info("Backed up VM '%s' to %s", spec.name, export.path)
+        self._publish_backups(vm_id, name=spec.name, reason="created", path=str(export.path))
+        return BackupResult(entry=entry, pruned=pruned)
+
+    def run_scheduled_backups(
+        self,
+        policy: BackupPolicy,
+        *,
+        now: datetime | None = None,
+        cancel: CancellationToken | None = None,
+    ) -> BackupRun:
+        """Back up every stopped VM whose newest backup is older than the interval."""
+
+        run = BackupRun()
+        if not policy.enabled:
+            return run
+        moment = now or datetime.now(UTC)
+        for spec in self.store.list_specs():
+            if cancel is not None:
+                cancel.raise_if_cancelled("The scheduled backup run was cancelled.")
+            try:
+                runtime = self.backend.refresh(spec, self.store.load_runtime(spec.id))
+            except OpenQVMError as exc:
+                run.errors.append(f"{spec.name}: {exc.message}")
+                continue
+            if self._vm_busy(runtime):
+                run.skipped.append(spec.name)
+                continue
+            try:
+                if not is_due(self.store.load_backups(spec.id), policy, moment):
+                    continue
+                run.results.append(
+                    self.backup_vm(
+                        spec.id,
+                        keep=policy.keep,
+                        destination=policy.directory,
+                        reason="scheduled",
+                        cancel=cancel,
+                    )
+                )
+            except CancelledError:
+                raise
+            except OpenQVMError as exc:
+                run.errors.append(f"{spec.name}: {exc.message}")
+        if run.results or run.errors:
+            log.info(
+                "Scheduled backups: %d created, %d errors, %d skipped",
+                len(run.results),
+                len(run.errors),
+                len(run.skipped),
+            )
+        return run
+
     # -- diagnostics ----------------------------------------------------------
 
     def recent_operations(self, limit: int = 20):
         return self.operations.recent(limit)
-
     def network_security_note(self, spec: VMSpec) -> str:
         return " ".join(security_note(nic.mode) for nic in spec.nics) or "No network adapters are attached."
 

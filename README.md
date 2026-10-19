@@ -21,6 +21,7 @@
 | Snapshots | ✅ Offline disk snapshots; online snapshots use memory state when the accelerator supports it, otherwise a disk-only fallback |
 | Clone | ✅ Stopped VMs, independent disk copies |
 | Export/import (`.oqv`) | ✅ ZIP package with SHA-256 integrity checks |
+| Automatic backups | ✅ Scheduled `.oqv` backups of stopped VMs with per-VM retention; restore by importing the package |
 | NAT networking with port forwarding | ✅ |
 | Bridged / host-only networking | ❌ Not implemented (detected and reported, never silently faked) |
 | Shared folders | ✅ Linux hosts (virtio-9p); unavailable on Windows/macOS |
@@ -174,6 +175,9 @@ Known security-related limitations in this alpha:
 - Cancellation is cooperative: long operations stop between chunks of work, so a
   single in-flight `qemu-img` or QMP call finishes before the operation aborts.
   Partial packages, staging directories and half-written disks are removed.
+- Backups are taken while the VM is stopped and are plain `.oqv` packages.
+  Restoring a backup means importing it, which creates a new VM identity; in-place
+  rollback is done with snapshots instead.
 - Online snapshots include guest memory only when QEMU can save it (KVM/TCG typically can; WHPX cannot). The fallback is an explicitly labelled disk-only snapshot that must be restored while the VM is stopped.
 - Cloning does not copy snapshot history. Use export/import if you need a disk with its internal snapshots.
 - Installers, code signing and package repositories are not provided yet.

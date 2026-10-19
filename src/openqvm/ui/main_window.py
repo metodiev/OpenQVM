@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -32,12 +33,14 @@ from openqvm.core.cancellation import CancellationToken
 from openqvm.core.errors import ErrorCode, OpenQVMError
 from openqvm.core.events import (
     ALL_TOPICS,
+    TOPIC_BACKUPS_CHANGED,
     TOPIC_OPERATION_PROGRESS,
     TOPIC_SNAPSHOTS_CHANGED,
     OperationProgress,
 )
 from openqvm.core.logging import get_logger
 from openqvm.core.models import VMStatus
+from openqvm.services.backups import is_due
 from openqvm.storage.transfer import suggested_export_name
 from openqvm.ui.async_ops import AsyncRunner
 from openqvm.ui.icons import app_icon
@@ -51,6 +54,9 @@ from openqvm.ui.theme import apply_theme
 from openqvm.ui.widgets.common import confirm, show_error
 
 log = get_logger("ui.main")
+
+BACKUP_CHECK_INTERVAL_MS = 15 * 60 * 1000
+BACKUP_STARTUP_DELAY_MS = 45 * 1000
 
 PAGE_DASHBOARD = 0
 PAGE_VMS = 1
@@ -89,6 +95,12 @@ class MainWindow(QMainWindow):
         self._refresh_timer.setSingleShot(True)
         self._refresh_timer.setInterval(120)
         self._refresh_timer.timeout.connect(self._apply_pending_refresh)
+        self._backup_timer = QTimer(self)
+        self._backup_timer.setInterval(BACKUP_CHECK_INTERVAL_MS)
+        self._backup_timer.timeout.connect(self._run_due_backups)
+        if context.backup_policy().enabled:
+            self._backup_timer.start()
+            QTimer.singleShot(BACKUP_STARTUP_DELAY_MS, self._run_due_backups)
         self._subscribe_events()
 
     def _subscribe_events(self) -> None:
@@ -115,6 +127,9 @@ class MainWindow(QMainWindow):
         if topic == TOPIC_SNAPSHOTS_CHANGED and self.stack.currentIndex() == PAGE_DETAILS:
             if getattr(payload, "vm_id", None) == self.details.vm_id:
                 self.details.reload_snapshots()
+        if topic == TOPIC_BACKUPS_CHANGED and self.stack.currentIndex() == PAGE_DETAILS:
+            if getattr(payload, "vm_id", None) == self.details.vm_id:
+                self.details.reload_backups()
 
     def _show_progress(self, event: OperationProgress) -> None:
         """Show a determinate bar when the operation reports a fraction."""
@@ -241,6 +256,7 @@ class MainWindow(QMainWindow):
 
         self.settings_page.theme_changed.connect(self.set_theme)
         self.settings_page.capabilities_changed.connect(self._backend_changed)
+        self.settings_page.backup_settings_changed.connect(self._backup_settings_changed)
         self.runner.busy_changed.connect(self._on_busy)
 
         QShortcut(QKeySequence.StandardKey.New, self, activated=self.create_vm)
@@ -337,6 +353,54 @@ class MainWindow(QMainWindow):
     def _backend_changed(self) -> None:
         self.refresh_all()
         self._update_backend_chip()
+
+    # -- scheduled backups ----------------------------------------------------
+
+    def _backup_settings_changed(self) -> None:
+        policy = self.context.backup_policy()
+        if policy.enabled:
+            if not self._backup_timer.isActive():
+                self._backup_timer.start()
+        else:
+            self._backup_timer.stop()
+        self.status_message.setText(
+            f"Scheduled backups {'enabled' if policy.enabled else 'disabled'}."
+        )
+
+    def _backups_due(self, policy) -> bool:  # type: ignore[no-untyped-def]
+        moment = datetime.now(UTC)
+        for spec in self.context.store.list_specs():
+            try:
+                if is_due(self.context.manager.list_backups(spec.id), policy, moment):
+                    return True
+            except OpenQVMError:
+                return True
+        return False
+
+    def _run_due_backups(self) -> None:
+        policy = self.context.backup_policy()
+        if not policy.enabled or self.runner.active_count:
+            return
+        if not self._backups_due(policy):
+            return
+
+        def done(run) -> None:  # type: ignore[no-untyped-def]
+            for error in run.errors:
+                log.warning("Scheduled backup failed: %s", error)
+            if run.created or run.errors:
+                summary = f"Scheduled backups: {run.created} created"
+                if run.errors:
+                    summary += f", {len(run.errors)} failed"
+                if run.skipped:
+                    summary += f", {len(run.skipped)} skipped"
+                self.status_message.setText(summary + ".")
+            self.refresh_all()
+
+        self._run(
+            "Running scheduled backups",
+            lambda token: self.context.manager.run_scheduled_backups(policy, cancel=token),
+            on_success=done,
+        )
 
     def _on_busy(self, busy: bool, description: str) -> None:
         self.progress.setRange(0, 0)
@@ -612,6 +676,9 @@ class MainWindow(QMainWindow):
         refresh_timer = getattr(self, "_refresh_timer", None)
         if refresh_timer is not None:
             refresh_timer.stop()
+        backup_timer = getattr(self, "_backup_timer", None)
+        if backup_timer is not None:
+            backup_timer.stop()
         for unsubscribe in self._unsubscribers:
             unsubscribe()
         self._unsubscribers.clear()

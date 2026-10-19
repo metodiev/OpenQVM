@@ -23,6 +23,7 @@ TOPIC_VM_UPDATED = "vm.updated"
 TOPIC_VM_DELETED = "vm.deleted"
 TOPIC_VM_STATE_CHANGED = "vm.state_changed"
 TOPIC_SNAPSHOTS_CHANGED = "snapshots.changed"
+TOPIC_BACKUPS_CHANGED = "backups.changed"
 TOPIC_OPERATION_STARTED = "operation.started"
 TOPIC_OPERATION_PROGRESS = "operation.progress"
 TOPIC_OPERATION_FINISHED = "operation.finished"
@@ -34,6 +35,7 @@ ALL_TOPICS = (
     TOPIC_VM_DELETED,
     TOPIC_VM_STATE_CHANGED,
     TOPIC_SNAPSHOTS_CHANGED,
+    TOPIC_BACKUPS_CHANGED,
     TOPIC_OPERATION_STARTED,
     TOPIC_OPERATION_PROGRESS,
     TOPIC_OPERATION_FINISHED,
@@ -69,6 +71,14 @@ class SnapshotEvent:
     vm_id: str
     name: str = ""
     reason: str = ""
+
+
+@dataclass(frozen=True)
+class BackupEvent:
+    vm_id: str
+    name: str = ""
+    reason: str = ""
+    path: str = ""
 
 
 @dataclass(frozen=True)

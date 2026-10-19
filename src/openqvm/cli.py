@@ -210,6 +210,17 @@ def _build_parser() -> argparse.ArgumentParser:
     check.add_argument("--timeout", type=float, default=1800.0, help="Seconds allowed per disk.")
     check.set_defaults(func=_cmd_check)
 
+    backup = subparsers.add_parser("backup", help="Back up a stopped VM, or every VM that is due.")
+    backup.add_argument("vm", nargs="?", help="VM name or id; omit together with --due.")
+    backup.add_argument("--due", action="store_true", help="Use the saved schedule and back up every due VM.")
+    backup.add_argument("--keep", type=int, default=None, help="Packages to keep per VM.")
+    backup.add_argument("--destination", type=Path, default=None, help="Folder for the packages.")
+    backup.set_defaults(func=_cmd_backup)
+
+    backups = subparsers.add_parser("backups", help="List the backups of a VM.")
+    backups.add_argument("vm")
+    backups.set_defaults(func=_cmd_backups)
+
     gui = subparsers.add_parser("gui", help="Start the desktop application.")
     gui.set_defaults(func=_cmd_gui)
 
@@ -682,6 +693,67 @@ def _cmd_check(args: argparse.Namespace) -> int:
             for line in result.output.strip().splitlines()[:20]:
                 print(f"    {line}")
     return EXIT_OK if summary.ok else EXIT_OPERATION_FAILED
+
+
+def _cmd_backup(args: argparse.Namespace) -> int:
+    from openqvm.services.backups import BackupPolicy
+
+    context = _manager(args)
+    saved = context.backup_policy()
+    keep = args.keep if args.keep is not None else saved.keep
+    destination = args.destination.expanduser().resolve() if args.destination else saved.directory
+    progress = _ProgressLine(context.manager, enabled=not args.json)
+    try:
+        if args.due or args.vm is None:
+            policy = BackupPolicy(
+                directory=destination,
+                enabled=True,
+                interval_hours=saved.interval_hours,
+                keep=keep,
+            )
+            run = context.manager.run_scheduled_backups(policy)
+        else:
+            spec = _resolve_vm(context.manager, args.vm)
+            result = context.manager.backup_vm(spec.id, keep=keep, destination=destination)
+    finally:
+        progress.close()
+
+    if args.due or args.vm is None:
+        if args.json:
+            print(json.dumps(run.to_dict(), indent=2, default=str))
+        else:
+            print(f"Created {run.created} backup(s).")
+            for created in run.results:
+                print(f"  {created.path} ({human_bytes(created.entry.size_bytes)})")
+            for name in run.skipped:
+                print(f"  skipped '{name}' (running)")
+        for error in run.errors:
+            print(f"error: {error}", file=sys.stderr)
+        return EXIT_OK if not run.errors else EXIT_OPERATION_FAILED
+
+    payload = {"vm": spec.name, "backup": result.entry.to_dict(), "pruned": list(result.pruned)}
+    text = (
+        f"Backed up '{spec.name}' to {result.path} ({human_bytes(result.entry.size_bytes)})."
+        + (f"\nRemoved {len(result.pruned)} old backup(s)." if result.pruned else "")
+    )
+    _print(args, payload, text=text)
+    return EXIT_OK
+
+
+def _cmd_backups(args: argparse.Namespace) -> int:
+    context = _manager(args)
+    spec = _resolve_vm(context.manager, args.vm)
+    entries = context.manager.list_backups(spec.id)
+    payload = {"vm": spec.name, "backups": [entry.to_dict() for entry in entries]}
+    if args.json:
+        print(json.dumps(payload, indent=2, default=str))
+        return EXIT_OK
+    if not entries:
+        print(f"No backups for '{spec.name}' (folder: {context.backup_policy().directory}).")
+        return EXIT_OK
+    for entry in entries:
+        print(f"{entry.created_at}  {human_bytes(entry.size_bytes):>10}  {entry.reason:<9}  {entry.path}")
+    return EXIT_OK
 
 
 def _tail(path: Path, lines: int) -> str:

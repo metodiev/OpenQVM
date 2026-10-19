@@ -57,11 +57,12 @@ untested platforms are not claimed as verified.
       snapshot operations, with partial-artifact cleanup
 - [x] Operation lifecycle events (`operation.started`, `operation.progress`,
       `operation.finished`) with byte-accurate progress for exports and imports
+- [x] Scheduled automatic backups of stopped VMs with retention and a backup index
 - [ ] Bridged networking (requires privileged helper/bridge configuration)
 - [ ] Host-only networking
 - [ ] TPM 2.0 (swtpm integration)
 - [ ] Clipboard integration
-- [ ] Scheduled/automatic backups
+- [x] Scheduled/automatic backups
 - [ ] Shared folders on Windows/macOS
 - [ ] USB passthrough
 

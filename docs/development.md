@@ -22,7 +22,7 @@ src/openqvm/
   storage/       qemu-img wrapper, ISO inspection, .oqv transfer
   snapshots/     offline qemu-img snapshots and online QMP snapshots
   networking/    QEMU netdev/device argument construction
-  services/      operation history, psutil metrics
+  services/      operation history, backup policy, psutil metrics
   app/           AppContext composition root
   ui/            Qt pages, theme, async runner, VNC widget
 tests/
@@ -137,6 +137,26 @@ window.grab().save("dashboard.png")
   lock and is documented as potentially disruptive.
 - Never bypass the lock automatically; a forced eject can break a guest that has
   the media mounted.
+
+## Backups
+
+- A backup is a normal `.oqv` export. There is no separate archive format and no
+  in-place restore: importing a backup creates a new VM, while snapshots provide
+  in-place rollback.
+- Backups require a stopped VM. `VmManager.backup_vm` refuses to run against a
+  busy runtime instead of silently exporting inconsistent disks.
+- The backup index lives in `<vm>/backups.json` (`VmStore.load_backups`/
+  `save_backups`, `BackupEntry` in `openqvm.core.models`). Packages default to the
+  data directory's `backups` folder.
+- Retention is per VM: `backups_to_prune` keeps the newest `keep` entries and
+  `backup_vm` deletes the rest after the index is written, so a crash between the
+  two never loses the index.
+- Scheduling is a caller concern: the GUI checks every 15 minutes (and once 45
+  seconds after startup) and `openqvm-cli backup --due` runs the same
+  `run_scheduled_backups` pass for cron. `is_due` decides from the newest entry
+  and the policy interval; `BackupPolicy` validates the bounds.
+- Publishing: `backups.changed` fires after a successful backup so open pages
+  refresh through the event bus instead of polling.
 
 ## Progress reporting
 

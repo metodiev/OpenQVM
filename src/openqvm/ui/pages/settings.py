@@ -6,6 +6,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QFormLayout,
@@ -13,18 +14,22 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QSpinBox,
     QVBoxLayout,
+    QWidget,
 )
 
 from openqvm import PRODUCT_NAME, PRODUCT_VERSION
 from openqvm.app.context import AppContext
 from openqvm.core.errors import OpenQVMError
+from openqvm.core.models import MAX_BACKUP_INTERVAL_HOURS, MAX_BACKUP_KEEP
 from openqvm.ui.widgets.common import Banner, Card, PageHeader, ScrollPage, confirm, open_folder, show_error
 
 
 class SettingsPage(ScrollPage):
     theme_changed = Signal(str)
     capabilities_changed = Signal()
+    backup_settings_changed = Signal()
 
     def __init__(self, context: AppContext, parent=None) -> None:
         super().__init__(parent)
@@ -84,6 +89,47 @@ class SettingsPage(ScrollPage):
         )
         form.addRow("Theme", self.theme_combo)
         self.content.addWidget(appearance)
+
+        backups = Card()
+        backup_form = QFormLayout(backups)
+        backup_form.setContentsMargins(16, 16, 16, 16)
+        backups_title = QLabel("Automatic backups")
+        backups_title.setProperty("role", "h3")
+        backup_form.addRow(backups_title)
+        self.backup_enabled = QCheckBox("Back up stopped virtual machines on a schedule")
+        self.backup_enabled.setChecked(self.context.settings.backup_enabled)
+        self.backup_enabled.toggled.connect(self._save_backup_settings)
+        backup_form.addRow("", self.backup_enabled)
+        self.backup_interval = QSpinBox()
+        self.backup_interval.setRange(1, MAX_BACKUP_INTERVAL_HOURS)
+        self.backup_interval.setSuffix(" h")
+        self.backup_interval.setValue(self.context.settings.backup_interval_hours)
+        self.backup_interval.valueChanged.connect(self._save_backup_settings)
+        backup_form.addRow("Interval", self.backup_interval)
+        self.backup_keep = QSpinBox()
+        self.backup_keep.setRange(1, MAX_BACKUP_KEEP)
+        self.backup_keep.setValue(self.context.settings.backup_keep)
+        self.backup_keep.valueChanged.connect(self._save_backup_settings)
+        backup_form.addRow("Keep per VM", self.backup_keep)
+        backup_directory_row = QWidget()
+        backup_directory_layout = QHBoxLayout(backup_directory_row)
+        backup_directory_layout.setContentsMargins(0, 0, 0, 0)
+        self.backup_dir = QLineEdit(self.context.settings.backup_dir or "")
+        self.backup_dir.setPlaceholderText(str(self.context.paths.backups_dir))
+        self.backup_dir.editingFinished.connect(self._save_backup_settings)
+        browse_backups = QPushButton("Browse…")
+        browse_backups.clicked.connect(self._browse_backup_dir)
+        backup_directory_layout.addWidget(self.backup_dir, 1)
+        backup_directory_layout.addWidget(browse_backups)
+        backup_form.addRow("Folder", backup_directory_row)
+        backup_note = QLabel(
+            "A backup is a complete .oqv package of a stopped virtual machine. Import the package to "
+            "restore it; the newest packages are kept and older ones are deleted automatically."
+        )
+        backup_note.setProperty("role", "muted")
+        backup_note.setWordWrap(True)
+        backup_form.addRow("", backup_note)
+        self.content.addWidget(backups)
 
         data_card = Card()
         data_layout = QVBoxLayout(data_card)
@@ -148,6 +194,11 @@ class SettingsPage(ScrollPage):
             text = "QEMU was not found. Install it or choose the directory containing qemu-system-x86_64 and qemu-img."
         self.backend_summary.setText(text)
         self.diagnostics.setText("\n".join(f"• {line}" for line in capabilities.diagnostics))
+        settings = self.context.settings
+        self.backup_enabled.setChecked(settings.backup_enabled)
+        self.backup_interval.setValue(settings.backup_interval_hours)
+        self.backup_keep.setValue(settings.backup_keep)
+        self.backup_dir.setText(settings.backup_dir or "")
         if not capabilities.backend_available:
             self.banner.show_message(text, severity="error")
         elif not capabilities.uefi:
@@ -162,6 +213,27 @@ class SettingsPage(ScrollPage):
         directory = QFileDialog.getExistingDirectory(self, "Choose the QEMU directory", str(Path.home()))
         if directory:
             self.qemu_dir.setText(directory)
+
+    def _browse_backup_dir(self) -> None:
+        directory = QFileDialog.getExistingDirectory(
+            self, "Choose the backup folder", str(self.context.paths.backups_dir)
+        )
+        if directory:
+            self.backup_dir.setText(directory)
+            self._save_backup_settings()
+
+    def _save_backup_settings(self) -> None:
+        try:
+            self.context.update_settings(
+                backup_enabled=self.backup_enabled.isChecked(),
+                backup_interval_hours=self.backup_interval.value(),
+                backup_keep=self.backup_keep.value(),
+                backup_dir=self.backup_dir.text().strip() or None,
+            )
+        except OpenQVMError as exc:
+            show_error(self, exc)
+            return
+        self.backup_settings_changed.emit()
 
     def _redetect(self) -> None:
         directory = self.qemu_dir.text().strip() or None

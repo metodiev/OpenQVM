@@ -24,6 +24,12 @@ All notable changes to OpenQVM are documented here. The format follows
   operations immediately. Exports, imports, clones, VM creation and disk checks
   report byte- or disk-accurate progress, which the GUI renders as a determinate
   status-bar indicator and `openqvm-cli` prints on an interactive terminal.
+- Automatic backups: a schedule (enable, interval, retention, folder) in Settings
+  backs up every stopped VM whose newest backup is older than the interval, keeps
+  the newest packages per VM and prunes the rest. Backups are ordinary `.oqv`
+  packages recorded in `backups.json`; the VM details page lists them with a
+  "Back up now" action, and `openqvm-cli backup`/`backups` expose the same
+  functionality, including `--due` for cron-style scripting.
 - Cooperative cancellation for long-running operations: a `CancellationToken`
   (``openqvm.core.cancellation``) is threaded through disk, snapshot and transfer
   work, checked between chunks, and surfaced in the GUI as a Cancel button in the

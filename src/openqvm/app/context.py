@@ -9,6 +9,7 @@ from openqvm.core.errors import OperationFailedError
 from openqvm.core.logging import get_logger, setup_logging
 from openqvm.core.paths import AppPaths
 from openqvm.platform.capabilities import PlatformCapabilities, detect_capabilities
+from openqvm.services.backups import BackupPolicy
 from openqvm.services.metrics import MetricsService
 from openqvm.services.operations import OperationLog
 from openqvm.store import AppSettings, SettingsStore, VmStore
@@ -80,10 +81,19 @@ class AppContext:
             qemu_dir=changes.get("qemu_dir", self.settings.qemu_dir),
             console_fit=changes.get("console_fit", self.settings.console_fit),
             last_page=changes.get("last_page", self.settings.last_page),
+            backup_enabled=changes.get("backup_enabled", self.settings.backup_enabled),
+            backup_interval_hours=changes.get(
+                "backup_interval_hours", self.settings.backup_interval_hours
+            ),
+            backup_keep=changes.get("backup_keep", self.settings.backup_keep),
+            backup_dir=changes.get("backup_dir", self.settings.backup_dir),
             schema_version=self.settings.schema_version,
         )
         self.save_settings(updated)
         return updated
+
+    def backup_policy(self) -> BackupPolicy:
+        return BackupPolicy.from_settings(self.settings, self.paths)
 
     def redetect(self, *, qemu_dir: str | None = None) -> PlatformCapabilities:
         capabilities = detect_capabilities(qemu_dir=qemu_dir if qemu_dir is not None else self.settings.qemu_dir)
