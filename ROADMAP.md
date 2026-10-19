@@ -84,8 +84,9 @@ untested platforms are not claimed as verified.
 - [x] Failure recovery for startup, snapshots and runtime reconciliation
 - [x] Installation, development and troubleshooting documentation
 - [ ] Independent security review
-- [ ] Fuzzing of the import format and configuration parser
-- [ ] Dependency vulnerability scanning in CI
+- [x] Property-based fuzzing of the import format, settings and configuration parser
+      (Hypothesis)
+- [x] Dependency vulnerability scanning in CI
 - [ ] Signed releases and reproducible-build verification
 - [ ] Accessibility audit with screen readers and high-contrast themes
 - [ ] Localization

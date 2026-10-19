@@ -30,6 +30,10 @@ All notable changes to OpenQVM are documented here. The format follows
   packages recorded in `backups.json`; the VM details page lists them with a
   "Back up now" action, and `openqvm-cli backup`/`backups` expose the same
   functionality, including `--due` for cron-style scripting.
+- Hardening: property-based tests (Hypothesis) assert that arbitrary package
+  bytes, archive layouts, manifests, settings and VM configurations are rejected
+  with structured errors and leave no partial state; a new CI job runs
+  `pip-audit` over the installed dependencies.
 - Cooperative cancellation for long-running operations: a `CancellationToken`
   (``openqvm.core.cancellation``) is threaded through disk, snapshot and transfer
   work, checked between chunks, and surfaced in the GUI as a Cancel button in the

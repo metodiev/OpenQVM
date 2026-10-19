@@ -50,6 +50,11 @@ ruff check src tests --select F,E9
   available. Point `OPENQVM_TEST_ISO` at an ISO to make it deterministic.
 - Unit tests do not start QEMU. Integration tests use `FakeBackend`/`FakeDisks`,
   which exercise manager orchestration but do not claim real virtualization.
+- Property-based tests live in `tests/unit/test_import_fuzz.py`. They generate
+  arbitrary package bytes, archive layouts, manifests, settings and VM
+  configurations and assert the parser contract: an `OpenQVMError` or a valid
+  object, never an unexpected exception or a leftover staging directory. Add a
+  strategy there instead of a hand-written malformed-input case.
 - No test may report hardware acceleration or a successful boot unless it actually
   happened. The real e2e test is the only test that asserts a guest boot.
 
@@ -247,4 +252,6 @@ Release steps:
 `.github/workflows/ci.yml` runs lint and tests on Linux, Windows and macOS for
 Python 3.11 and 3.13. The real-QEMU e2e job runs on Ubuntu for manual dispatches
 and on a schedule; GitHub runners usually lack KVM, so it uses TCG and states
-that in the job name.
+that in the job name. A separate `dependency-audit` job installs the project with
+its dev extras and runs `pip-audit`, so a known vulnerability in any dependency
+fails CI.

@@ -35,6 +35,8 @@ dev = [
     "pytest>=8",
     "pytest-timeout>=2.3",
     "ruff>=0.6",
+    "hypothesis>=6.100",
+    "pip-audit>=2.7",
 ]
 
 [project.scripts]
