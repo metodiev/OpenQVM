@@ -23,6 +23,7 @@ from openqvm.vm.manager import VmManager
 class FakeDisks:
     def __init__(self) -> None:
         self.files: dict[str, bytes] = {}
+        self.check_failures: set[str] = set()
 
     def create(self, path, disk, *, overwrite: bool = False):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -38,6 +39,13 @@ class FakeDisks:
 
     def delete(self, path):
         Path(path).unlink(missing_ok=True)
+
+    def check(self, path, timeout: float = 1800.0):
+        from openqvm.storage.disks import DiskCheckResult
+
+        if path.name in self.check_failures:
+            return DiskCheckResult(path=path, ok=False, output="ERROR: image is corrupt")
+        return DiskCheckResult(path=path, ok=True, output="No errors were found.")
 
     def require_qemu_img(self):
         raise RuntimeError("qemu-img is not available in this fake")
@@ -190,3 +198,67 @@ def test_invalid_resources_are_rejected_before_disk_creation(manager):
     with pytest.raises(Exception, match="not valid"):
         manager.create_vm(spec)
     assert not manager.paths.vm_dir(spec.id).exists()
+
+
+def test_events_report_lifecycle_changes(manager):
+    from openqvm.core.events import (
+        TOPIC_OPERATION_FINISHED,
+        TOPIC_VM_CREATED,
+        TOPIC_VM_DELETED,
+        TOPIC_VM_STATE_CHANGED,
+        VmEvent,
+        VmStateEvent,
+    )
+
+    received: dict[str, list] = {}
+    for topic in (TOPIC_VM_CREATED, TOPIC_VM_STATE_CHANGED, TOPIC_VM_DELETED, TOPIC_OPERATION_FINISHED):
+        received[topic] = []
+        manager.events.subscribe(topic, lambda payload, bucket=received[topic]: bucket.append(payload))
+
+    spec = manager.create_vm(_spec())
+    assert isinstance(received[TOPIC_VM_CREATED][0], VmEvent)
+    assert received[TOPIC_VM_CREATED][0].vm_id == spec.id
+
+    manager.start_vm(spec.id)
+    started = received[TOPIC_VM_STATE_CHANGED][-1]
+    assert isinstance(started, VmStateEvent)
+    assert started.previous is VMStatus.STOPPED
+    assert started.current is VMStatus.RUNNING
+
+    manager.pause_vm(spec.id)
+    assert received[TOPIC_VM_STATE_CHANGED][-1].current is VMStatus.PAUSED
+
+    manager.resume_vm(spec.id)
+    assert received[TOPIC_VM_STATE_CHANGED][-1].current is VMStatus.RUNNING
+
+    manager.stop_vm(spec.id, force=True)
+    assert received[TOPIC_VM_STATE_CHANGED][-1].current is VMStatus.STOPPED
+
+    manager.delete_vm(spec.id)
+    assert received[TOPIC_VM_DELETED][-1].vm_id == spec.id
+    actions = [record.action for record in received[TOPIC_OPERATION_FINISHED]]
+    assert "Start VM" in actions
+    assert "Delete VM" in actions
+    assert all(record.status.value == "succeeded" for record in received[TOPIC_OPERATION_FINISHED])
+
+
+def test_check_disks_reports_per_disk_status(manager):
+    spec = manager.create_vm(_spec())
+    summary = manager.check_disks(spec.id)
+    assert summary.ok
+    assert len(summary.results) == 1
+    assert summary.results[0].ok
+
+    manager.disks.check_failures.add(spec.disks[0].filename)
+    failing = manager.check_disks(spec.id)
+    assert not failing.ok
+    assert "corrupt" in failing.results[0].output
+    assert failing.to_dict()["ok"] is False
+
+
+def test_check_disks_refuses_running_vm(manager):
+    spec = manager.create_vm(_spec())
+    manager.start_vm(spec.id)
+    with pytest.raises(InvalidStateError, match="stopped"):
+        manager.check_disks(spec.id)
+    manager.stop_vm(spec.id, force=True)

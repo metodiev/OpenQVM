@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import functools
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt, QTimer
+from PySide6.QtCore import QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
 from openqvm import PRODUCT_NAME, PRODUCT_VERSION
 from openqvm.app.context import AppContext
 from openqvm.core.errors import OpenQVMError
+from openqvm.core.events import ALL_TOPICS, TOPIC_SNAPSHOTS_CHANGED
 from openqvm.core.logging import get_logger
 from openqvm.core.models import VMStatus
 from openqvm.storage.transfer import suggested_export_name
@@ -49,6 +51,8 @@ PAGE_SETTINGS = 3
 
 
 class MainWindow(QMainWindow):
+    event_received = Signal(str, object)
+
     def __init__(self, context: AppContext) -> None:
         super().__init__()
         self.context = context
@@ -56,8 +60,10 @@ class MainWindow(QMainWindow):
         self.summaries: list = []
         self.errors: list[str] = []
         self._refreshing = False
+        self._refresh_pending = False
         self._consoles: dict[str, ConsoleWindow] = {}
         self._wizard: CreateVmWizard | None = None
+        self._unsubscribers: list = []
         self._settings_store = QSettings("OpenQVM", "OpenQVM")
         self.setWindowTitle(f"{PRODUCT_NAME} {PRODUCT_VERSION}")
         self.setWindowIcon(app_icon())
@@ -68,9 +74,43 @@ class MainWindow(QMainWindow):
         self._restore_state()
         self.refresh_all()
         self.timer = QTimer(self)
-        self.timer.setInterval(2500)
+        self.timer.setInterval(5000)
         self.timer.timeout.connect(self.refresh_all)
         self.timer.start()
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.setInterval(120)
+        self._refresh_timer.timeout.connect(self._apply_pending_refresh)
+        self._subscribe_events()
+
+    def _subscribe_events(self) -> None:
+        """Forward manager events onto the GUI thread.
+
+        Manager operations run on worker threads, so publisher callbacks must not
+        touch widgets.  Emitting a Qt signal delivers them to the GUI thread.
+        """
+
+        self.event_received.connect(self._on_event, Qt.ConnectionType.QueuedConnection)
+        for topic in ALL_TOPICS:
+            self._unsubscribers.append(
+                self.context.manager.events.subscribe(
+                    topic, functools.partial(self.event_received.emit, topic)
+                )
+            )
+
+    def _on_event(self, topic: str, payload) -> None:  # type: ignore[no-untyped-def]
+        self._refresh_pending = True
+        self._refresh_timer.start()
+        if topic == TOPIC_SNAPSHOTS_CHANGED and self.stack.currentIndex() == PAGE_DETAILS:
+            if getattr(payload, "vm_id", None) == self.details.vm_id:
+                self.details.reload_snapshots()
+
+    def _apply_pending_refresh(self) -> None:
+        if not self._refresh_pending:
+            return
+        self._refresh_pending = False
+        if not self._refreshing:
+            self.refresh_all()
 
     # -- construction ---------------------------------------------------------
 
@@ -183,6 +223,14 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+Q"), self, activated=self.close)
         QShortcut(QKeySequence("Alt+Left"), self, activated=self.show_vm_list)
         self.theme_button.setText(self._theme_button_text())
+
+    def subscribe_to_events(self, callback) -> None:  # type: ignore[no-untyped-def]
+        """Register an additional GUI-thread callback for manager events.
+
+        Used by tests and future pages; the callback receives ``(topic, payload)``.
+        """
+
+        self.event_received.connect(callback, Qt.ConnectionType.QueuedConnection)
 
     def _restore_state(self) -> None:
         geometry = self._settings_store.value("window/geometry")
@@ -492,6 +540,12 @@ class MainWindow(QMainWindow):
         timer = getattr(self, "timer", None)
         if timer is not None:
             timer.stop()
+        refresh_timer = getattr(self, "_refresh_timer", None)
+        if refresh_timer is not None:
+            refresh_timer.stop()
+        for unsubscribe in self._unsubscribers:
+            unsubscribe()
+        self._unsubscribers.clear()
         for console in list(getattr(self, "_consoles", {}).values()):
             console.close()
         self.runner.wait_for_done(5000)

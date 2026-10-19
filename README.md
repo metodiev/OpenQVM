@@ -15,6 +15,7 @@
 | Real guest display in the app | ✅ Embedded VNC client (RFB, loopback) |
 | Serial console and QEMU log | ✅ Streamed into the console window |
 | Virtual disks (qcow2/raw, VirtIO/IDE) | ✅ Create, add, detach and grow |
+| Disk consistency check | ✅ `qemu-img check` from the UI and `openqvm-cli check` |
 | Installation ISO attach/eject | ✅ While the VM is stopped |
 | Snapshots | ✅ Offline disk snapshots; online snapshots use memory state when the accelerator supports it, otherwise a disk-only fallback |
 | Clone | ✅ Stopped VMs, independent disk copies |
@@ -25,6 +26,7 @@
 | UEFI firmware | ✅ When edk2/OVMF is installed |
 | TPM 2.0 | ❌ Not implemented yet; Windows 11 guests warn about this |
 | Real host/VM metrics | ✅ Measured with psutil; unavailable values are labelled |
+| Live UI updates | ✅ Manager events refresh the UI immediately; polling is only a fallback |
 | Dark and light themes | ✅ |
 
 ## Screenshots
@@ -36,6 +38,10 @@
 | Creation wizard | Light theme |
 | --- | --- |
 | ![Wizard](docs/images/create-wizard.png) | ![Light theme](docs/images/dashboard-light.png) |
+
+| Storage and disk checks | Snapshots |
+| --- | --- |
+| ![Storage](docs/images/vm-storage.png) | ![Snapshots](docs/images/vm-snapshots.png) |
 
 ## Architecture in one paragraph
 
@@ -123,6 +129,7 @@ openqvm-cli list
 openqvm-cli start <vm-id>
 openqvm-cli status <vm-id>
 openqvm-cli snapshot create <vm-id> before-upgrade --description "Fresh install"
+openqvm-cli check <vm-id>
 openqvm-cli stop <vm-id> --force
 openqvm-cli export <vm-id> ./ubuntu.oqv
 openqvm-cli import ./ubuntu.oqv
@@ -139,7 +146,7 @@ pytest tests/end_to_end -m e2e -q -s         # real QEMU boot test
 
 The end-to-end test needs QEMU and an Alpine ISO. It looks for `OPENQVM_TEST_ISO`, then for `alpine-virt-*.iso` in the OpenQVM ISO folder. It performs a real boot, verifies serial output, captures a VNC framebuffer, pauses/resumes, snapshots, restores, exports, imports and clones. Set `OPENQVM_TEST_ISO` explicitly in CI or on other systems.
 
-The test suite includes 63 unit/integration tests plus the real-QEMU end-to-end test. GUI tests run with Qt's offscreen platform.
+The test suite includes 75 unit/integration tests plus the real-QEMU end-to-end test. GUI tests run with Qt's offscreen platform.
 
 ## Security
 

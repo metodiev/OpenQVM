@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from openqvm.app.context import AppContext
 from openqvm.core.errors import OpenQVMError
+from openqvm.core.events import TOPIC_VM_DELETED, TOPIC_VM_STATE_CHANGED, TOPIC_VM_UPDATED, VmEvent, VmStateEvent
 from openqvm.core.logging import get_logger
 from openqvm.core.models import VMStatus
 from openqvm.ui.vnc import VncWidget
@@ -29,12 +30,14 @@ log = get_logger("ui.console")
 
 class ConsoleWindow(QMainWindow):
     closed = Signal(str)
+    vm_event = Signal(object)
 
     def __init__(self, context: AppContext, vm_id: str, parent=None) -> None:
         super().__init__(parent)
         self.context = context
         self.vm_id = vm_id
         self._vnc: VncWidget | None = None
+        self._unsubscribers: list = []
         self._qemu_tail = LogTail(context.manager.qemu_log_path(vm_id))
         self._serial_tail = LogTail(context.manager.serial_log_path(vm_id))
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
@@ -50,9 +53,31 @@ class ConsoleWindow(QMainWindow):
         self._timer.setInterval(1200)
         self._timer.timeout.connect(self._poll)
         self._timer.start()
+        self.vm_event.connect(self._on_vm_event, Qt.ConnectionType.QueuedConnection)
+        for topic in (TOPIC_VM_STATE_CHANGED, TOPIC_VM_UPDATED, TOPIC_VM_DELETED):
+            self._unsubscribers.append(
+                context.manager.events.subscribe(topic, self._forward_vm_event)
+            )
         if self.summary.runtime.status in (VMStatus.RUNNING, VMStatus.PAUSED):
             self._connect_display()
         self._refresh_status()
+
+    def _forward_vm_event(self, payload) -> None:  # type: ignore[no-untyped-def]
+        """Runs on the publishing thread; only emit a queued signal."""
+
+        if getattr(payload, "vm_id", None) == self.vm_id:
+            self.vm_event.emit(payload)
+
+    def _on_vm_event(self, payload) -> None:  # type: ignore[no-untyped-def]
+        if isinstance(payload, VmEvent):
+            self.close()
+            return
+        if isinstance(payload, VmStateEvent):
+            self._refresh_status()
+            if payload.current not in (VMStatus.RUNNING, VMStatus.PAUSED) and self._vnc is not None:
+                self._dispose_vnc()
+                self.display_placeholder.setText("The virtual machine is not running.")
+                self.display_placeholder.setVisible(True)
 
     def _build(self) -> None:
         central = QWidget()
@@ -179,6 +204,8 @@ class ConsoleWindow(QMainWindow):
         except OpenQVMError:
             return
         self.summary = summary
+        self.setWindowTitle(f"OpenQVM console — {summary.spec.name}")
+        self.name_label.setText(summary.spec.name)
         self.status_label.setText(
             f"{summary.runtime.status.value} · accelerator {summary.runtime.accelerator or '—'}"
         )
@@ -190,6 +217,9 @@ class ConsoleWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         self._timer.stop()
+        for unsubscribe in self._unsubscribers:
+            unsubscribe()
+        self._unsubscribers.clear()
         self._dispose_vnc()
         self.closed.emit(self.vm_id)
         super().closeEvent(event)

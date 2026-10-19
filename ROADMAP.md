@@ -34,6 +34,7 @@ untested platforms are not claimed as verified.
 - [x] Resource configuration and validation
 - [x] Lifecycle error recovery and runtime reconciliation on startup
 - [x] Disk inspection, consistency check API, grow-only resize
+- [x] Real-time UI updates through typed manager events (no polling delay)
 - [x] Add/remove data disks
 - [x] UEFI firmware support when edk2/OVMF is available
 - [x] Corrupt configuration recovery and trash/quarantine behavior

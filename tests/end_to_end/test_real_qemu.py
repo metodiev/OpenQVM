@@ -106,6 +106,8 @@ def test_real_qemu_boot_snapshot_export(tmp_path):
         running = False
 
         export_path = tmp_path / "e2e-export.oqv"
+        disk_check = manager.check_disks(vm_id)
+        assert disk_check.ok, [result.output for result in disk_check.results]
         exported = manager.export_vm(vm_id, export_path)
         assert exported.path.is_file() and exported.size_bytes > 0
         imported = manager.import_vm(export_path)

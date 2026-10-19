@@ -113,6 +113,10 @@ window.grab().save("dashboard.png")
   directory so deletion can quarantine it safely.
 - **Test the contract.** Add unit tests for validation/argv/parsing and an
   integration test for orchestration. Real QEMU behavior belongs in e2e tests.
+- **Publish state changes as events.** `VmManager` publishes typed events through
+  `openqvm.core.events.EventBus`. Widgets must bridge them with a Qt signal (see
+  `MainWindow._subscribe_events`) because publishing may happen on a worker
+  thread; never touch widgets from the subscriber callback.
 
 ## Snapshot semantics
 

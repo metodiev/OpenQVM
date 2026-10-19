@@ -4,6 +4,20 @@ All notable changes to OpenQVM are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Event-driven UI updates: `VmManager` publishes typed events for VM
+  create/update/delete, lifecycle transitions, snapshot changes and finished
+  operations. The window and console react immediately instead of waiting for the
+  polling interval.
+- Disk consistency checks with `qemu-img check` in the VM Storage tab, in
+  `openqvm-cli check`, and per-disk JSON results. Checks are refused while the VM
+  is running.
+- Integration and end-to-end coverage for the event bus, disk checks and
+  event-driven refresh.
+
 ## [0.1.0] - 2026-10-19
 
 ### Added

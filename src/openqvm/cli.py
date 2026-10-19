@@ -174,6 +174,11 @@ def _build_parser() -> argparse.ArgumentParser:
     logs.add_argument("--lines", type=int, default=80)
     logs.set_defaults(func=_cmd_logs)
 
+    check = subparsers.add_parser("check", help="Run qemu-img check on the VM disks (VM must be stopped).")
+    check.add_argument("vm")
+    check.add_argument("--timeout", type=float, default=1800.0, help="Seconds allowed per disk.")
+    check.set_defaults(func=_cmd_check)
+
     gui = subparsers.add_parser("gui", help="Start the desktop application.")
     gui.set_defaults(func=_cmd_gui)
 
@@ -596,6 +601,23 @@ def _cmd_logs(args: argparse.Namespace) -> int:
     print(f"\n== Serial console ({serial_log}) ==")
     print(payload["serial_log"] or "(empty)")
     return EXIT_OK
+
+
+def _cmd_check(args: argparse.Namespace) -> int:
+    context = _manager(args)
+    spec = _resolve_vm(context.manager, args.vm)
+    summary = context.manager.check_disks(spec.id, timeout=args.timeout)
+    if args.json:
+        print(json.dumps({"vm": spec.name, **summary.to_dict()}, indent=2))
+        return EXIT_OK if summary.ok else EXIT_OPERATION_FAILED
+    print(f"Disk check for '{spec.name}':")
+    for result in summary.results:
+        state = "OK" if result.ok else "PROBLEMS"
+        print(f"  {result.path.name:<40} {state}")
+        if not result.ok and result.output.strip():
+            for line in result.output.strip().splitlines()[:20]:
+                print(f"    {line}")
+    return EXIT_OK if summary.ok else EXIT_OPERATION_FAILED
 
 
 def _tail(path: Path, lines: int) -> str:

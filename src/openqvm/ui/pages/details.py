@@ -262,6 +262,9 @@ class VmDetailsPage(QWidget):
         self.add_disk_button.clicked.connect(self._add_disk)
         self.resize_disk_button = QPushButton("Resize…")
         self.resize_disk_button.clicked.connect(self._resize_disk)
+        self.check_disks_button = QPushButton("Check disks…")
+        self.check_disks_button.setToolTip("Run qemu-img check on every disk (VM must be stopped)")
+        self.check_disks_button.clicked.connect(self._check_disks)
         self.remove_disk_button = QPushButton("Remove…")
         self.remove_disk_button.setProperty("variant", "danger")
         self.remove_disk_button.clicked.connect(self._remove_disk)
@@ -270,6 +273,7 @@ class VmDetailsPage(QWidget):
         disk_open.clicked.connect(lambda: open_folder(self.context.paths.vm_disk_dir(self.vm_id or "")))
         disk_actions.addWidget(self.add_disk_button)
         disk_actions.addWidget(self.resize_disk_button)
+        disk_actions.addWidget(self.check_disks_button)
         disk_actions.addWidget(self.remove_disk_button)
         disk_actions.addStretch(1)
         disk_actions.addWidget(disk_open)
@@ -581,6 +585,7 @@ class VmDetailsPage(QWidget):
         for widget in (
             self.add_disk_button,
             self.resize_disk_button,
+            self.check_disks_button,
             self.remove_disk_button,
             self.attach_iso_button,
             self.eject_iso_button,
@@ -645,6 +650,9 @@ class VmDetailsPage(QWidget):
             self.network_banner.clear()
 
     def _load_snapshots(self) -> None:
+        self.reload_snapshots()
+
+    def reload_snapshots(self) -> None:
         if not self.vm_id:
             return
         try:
@@ -832,6 +840,44 @@ class VmDetailsPage(QWidget):
             "Resizing disk",
             lambda: self.context.manager.resize_disk(self.vm_id, disk_id, size * 1024**3),
         )
+
+    def _check_disks(self) -> None:
+        if not self.vm_id:
+            return
+        self.runner.submit(
+            "Checking disks",
+            lambda: self.context.manager.check_disks(self.vm_id),
+            on_success=self._show_disk_check,
+            on_error=self._operation_failed,
+        )
+
+    def _show_disk_check(self, summary) -> None:  # type: ignore[no-untyped-def]
+        lines: list[str] = []
+        details: list[str] = []
+        for result in summary.results:
+            state = "OK" if result.ok else "Problems found"
+            lines.append(f"{result.path.name}: {state}")
+            if result.output.strip():
+                details.append(f"=== {result.path.name} ===\n{result.output.strip()}")
+            if result.error:
+                details.append(f"=== {result.path.name} ===\n{result.error}")
+        if not lines:
+            lines.append("The virtual machine has no disks to check.")
+        message = "\n".join(lines)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information if summary.ok else QMessageBox.Icon.Warning)
+        box.setWindowTitle("Disk consistency check")
+        box.setText(message)
+        if summary.ok:
+            box.setInformativeText("No consistency problems were reported by qemu-img check.")
+        else:
+            box.setInformativeText(
+                "At least one disk reported problems. Back up the VM before attempting repairs; "
+                "qemu-img does not repair images by itself in this workflow."
+            )
+        box.setDetailedText("\n\n".join(details))
+        box.exec()
+        self.full_refresh()
 
     def _remove_disk(self) -> None:
         disk_id = self._disk_id()

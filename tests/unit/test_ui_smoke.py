@@ -56,6 +56,29 @@ def test_main_window_and_wizard_construct(tmp_path, qapp):
 
 
 @pytest.mark.gui
+def test_main_window_forwards_manager_events(tmp_path, qapp):
+    from openqvm.core.events import TOPIC_VM_CREATED, VmEvent
+    from openqvm.ui.main_window import MainWindow
+
+    context = AppContext.create(data_dir=tmp_path / "data")
+    window = MainWindow(context)
+    try:
+        received: list[tuple[str, object]] = []
+        window.subscribe_to_events(lambda topic, payload: received.append((topic, payload)))
+        event = VmEvent(vm_id="6f0c6b5a-5e80-4f88-9c0b-2a1b8f1e5c11", name="event-vm")
+        context.manager.events.publish(TOPIC_VM_CREATED, event)
+        for _ in range(5):
+            qapp.processEvents()
+        assert received == [(TOPIC_VM_CREATED, event)]
+        assert window._refresh_pending or window._refresh_timer.isActive()
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+        context.close()
+
+
+@pytest.mark.gui
 def test_nic_dialog_roundtrips_port_forwards(tmp_path, qapp):
     from openqvm.ui.pages.details import NicDialog
 

@@ -26,6 +26,18 @@ from openqvm.core.errors import (
     error_from_exception,
     raise_if_errors,
 )
+from openqvm.core.events import (
+    TOPIC_OPERATION_FINISHED,
+    TOPIC_SNAPSHOTS_CHANGED,
+    TOPIC_VM_CREATED,
+    TOPIC_VM_DELETED,
+    TOPIC_VM_STATE_CHANGED,
+    TOPIC_VM_UPDATED,
+    EventBus,
+    SnapshotEvent,
+    VmEvent,
+    VmStateEvent,
+)
 from openqvm.core.logging import get_logger
 from openqvm.core.models import (
     DiskBus,
@@ -44,7 +56,7 @@ from openqvm.platform.capabilities import PlatformCapabilities
 from openqvm.platform.compatibility import check_compatibility
 from openqvm.services.operations import OperationLog
 from openqvm.snapshots import SnapshotService, SnapshotTagInfo
-from openqvm.storage.disks import DiskManager
+from openqvm.storage.disks import DiskCheckResult, DiskManager
 from openqvm.storage.iso import inspect_iso
 from openqvm.storage.transfer import ExportResult, ImportResult, VmTransferService
 from openqvm.store import VmStore
@@ -108,6 +120,23 @@ class DeleteResult:
     quarantine_path: Path
 
 
+@dataclass(frozen=True)
+class DiskCheckSummary:
+    vm_id: str
+    results: list[DiskCheckResult]
+
+    @property
+    def ok(self) -> bool:
+        return all(result.ok for result in self.results)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "vm_id": self.vm_id,
+            "ok": self.ok,
+            "disks": [result.to_dict() for result in self.results],
+        }
+
+
 def _recorded(action: str) -> Callable[[Callable[..., T]], Callable[..., T]]:
     def decorator(function: Callable[..., T]) -> Callable[..., T]:
         @functools.wraps(function)
@@ -116,13 +145,16 @@ def _recorded(action: str) -> Callable[[Callable[..., T]], Callable[..., T]]:
             try:
                 result = function(self, vm_id, *args, **kwargs)
             except OpenQVMError as exc:
-                self.operations.fail(record, exc)
+                failed = self.operations.fail(record, exc)
+                self.events.publish(TOPIC_OPERATION_FINISHED, failed)
                 raise
             except Exception as exc:  # pragma: no cover - defensive
                 normalized = error_from_exception(exc, default_message=f"{action} failed.")
-                self.operations.fail(record, normalized)
+                failed = self.operations.fail(record, normalized)
+                self.events.publish(TOPIC_OPERATION_FINISHED, failed)
                 raise normalized from exc
-            self.operations.succeed(record)
+            finished = self.operations.succeed(record)
+            self.events.publish(TOPIC_OPERATION_FINISHED, finished)
             return result
 
         return wrapper
@@ -141,14 +173,38 @@ class VmManager:
         disks: DiskManager | None = None,
         operations: OperationLog | None = None,
         host: HostResources | None = None,
+        events: EventBus | None = None,
     ) -> None:
         self.paths = paths
         self.capabilities = capabilities
         self.store = store or VmStore(paths)
         self.operations = operations or OperationLog(paths.operations_log)
+        self.events = events or EventBus()
         self.host = host or HostResources.detect()
         self._create_lock = threading.Lock()
         self._configure_components(disks=disks, backend=backend)
+
+    def _publish_state(
+        self, vm_id: str, name: str, previous: VMStatus, runtime: VMRuntime
+    ) -> None:
+        if previous is runtime.status:
+            return
+        self.events.publish(
+            TOPIC_VM_STATE_CHANGED,
+            VmStateEvent(
+                vm_id=vm_id,
+                name=name,
+                previous=previous,
+                current=runtime.status,
+                runtime=runtime,
+            ),
+        )
+
+    def _publish_vm(self, topic: str, vm_id: str, *, name: str = "", reason: str = "") -> None:
+        self.events.publish(topic, VmEvent(vm_id=vm_id, name=name, reason=reason))
+
+    def _publish_snapshots(self, vm_id: str, *, name: str = "", reason: str = "") -> None:
+        self.events.publish(TOPIC_SNAPSHOTS_CHANGED, SnapshotEvent(vm_id=vm_id, name=name, reason=reason))
 
     @staticmethod
     def _vm_busy(runtime: VMRuntime) -> bool:
@@ -278,6 +334,7 @@ class VmManager:
                     raise
             self.operations.succeed(record)
             log.info("Created VM '%s' (%s)", spec.name, spec.id)
+            self._publish_vm(TOPIC_VM_CREATED, spec.id, name=spec.name, reason="created")
             return spec
         except OpenQVMError as exc:
             self.operations.fail(record, exc)
@@ -319,6 +376,7 @@ class VmManager:
             spec.touch()
             self.store.save_spec(spec)
             log.info("Updated VM '%s' (%s)", spec.name, spec.id)
+            self._publish_vm(TOPIC_VM_UPDATED, spec.id, name=spec.name, reason="updated")
             return spec
 
     def rename_vm(self, vm_id: str, new_name: str) -> VMSpec:
@@ -330,6 +388,7 @@ class VmManager:
             self._raise_for_issues(spec, exclude_vm_id=vm_id)
             spec.touch()
             self.store.save_spec(spec)
+            self._publish_vm(TOPIC_VM_UPDATED, spec.id, name=spec.name, reason="renamed")
             return spec
 
     @_recorded("Delete VM")
@@ -347,6 +406,7 @@ class VmManager:
             quarantine = self.store.quarantine_vm(vm_id)
         with suppress(OSError):
             self.paths.vm_lock_file(vm_id).unlink()
+        self._publish_vm(TOPIC_VM_DELETED, vm_id, name=spec.name, reason="deleted")
         return DeleteResult(vm_id=vm_id, quarantine_path=quarantine)
 
     def purge_trash(self) -> int:
@@ -365,7 +425,15 @@ class VmManager:
                     hint="If it is unresponsive, use force stop before starting it again.",
                 )
             self._raise_for_issues(spec, exclude_vm_id=vm_id)
-            return self.backend.start(spec, runtime)
+            previous = runtime.status
+            try:
+                started = self.backend.start(spec, runtime)
+            except OpenQVMError:
+                with suppress(OpenQVMError):
+                    self._publish_state(vm_id, spec.name, previous, self.store.load_runtime(vm_id))
+                raise
+            self._publish_state(vm_id, spec.name, previous, started)
+            return started
 
     @_recorded("Stop VM")
     def stop_vm(self, vm_id: str, *, force: bool = False, timeout: float = 30.0) -> VMRuntime:
@@ -374,26 +442,39 @@ class VmManager:
             runtime = self.backend.refresh(spec, self.store.load_runtime(vm_id))
             if runtime.status is VMStatus.STOPPED and runtime.pid is None:
                 return runtime
-            return self.backend.stop(spec, runtime, force=force, timeout=timeout)
+            previous = runtime.status
+            stopped = self.backend.stop(spec, runtime, force=force, timeout=timeout)
+            self._publish_state(vm_id, spec.name, previous, stopped)
+            return stopped
 
     @_recorded("Pause VM")
     def pause_vm(self, vm_id: str) -> VMRuntime:
         with self.store.lock(vm_id, timeout=30):
             spec = self.store.load_spec(vm_id)
             runtime = self.backend.refresh(spec, self.store.load_runtime(vm_id))
-            return self.backend.pause(spec, runtime)
+            previous = runtime.status
+            paused = self.backend.pause(spec, runtime)
+            self._publish_state(vm_id, spec.name, previous, paused)
+            return paused
 
     @_recorded("Resume VM")
     def resume_vm(self, vm_id: str) -> VMRuntime:
         with self.store.lock(vm_id, timeout=30):
             spec = self.store.load_spec(vm_id)
             runtime = self.backend.refresh(spec, self.store.load_runtime(vm_id))
-            return self.backend.resume(spec, runtime)
+            previous = runtime.status
+            resumed = self.backend.resume(spec, runtime)
+            self._publish_state(vm_id, spec.name, previous, resumed)
+            return resumed
 
     def refresh_status(self, vm_id: str) -> VMRuntime:
         with self.store.lock(vm_id, timeout=10):
             spec = self.store.load_spec(vm_id)
-            return self.backend.refresh(spec, self.store.load_runtime(vm_id))
+            runtime = self.store.load_runtime(vm_id)
+            previous = runtime.status
+            refreshed = self.backend.refresh(spec, runtime)
+        self._publish_state(vm_id, spec.name, previous, refreshed)
+        return refreshed
 
     # -- storage --------------------------------------------------------------
 
@@ -419,6 +500,7 @@ class VmManager:
             except Exception:
                 log.exception("Disk %s was resized but the VM configuration could not be saved", disk.filename)
                 raise
+            self._publish_vm(TOPIC_VM_UPDATED, spec.id, name=spec.name, reason="disk_resized")
             return spec
 
     @_recorded("Add disk")
@@ -459,6 +541,7 @@ class VmManager:
             except Exception:
                 self.disks.delete(path)
                 raise
+            self._publish_vm(TOPIC_VM_UPDATED, spec.id, name=spec.name, reason="disk_added")
             return spec
 
     @_recorded("Remove disk")
@@ -492,6 +575,7 @@ class VmManager:
                 if moved_to is not None and moved_to.is_file():
                     shutil.move(str(moved_to), str(path))
                 raise
+            self._publish_vm(TOPIC_VM_UPDATED, spec.id, name=spec.name, reason="disk_removed")
             return spec
 
     @_recorded("Attach ISO")
@@ -513,6 +597,7 @@ class VmManager:
             self._raise_for_issues(spec, exclude_vm_id=vm_id)
             spec.touch()
             self.store.save_spec(spec)
+            self._publish_vm(TOPIC_VM_UPDATED, spec.id, name=spec.name, reason="iso_attached")
             return spec
 
     @_recorded("Eject ISO")
@@ -528,6 +613,7 @@ class VmManager:
             spec.boot_order = [device for device in spec.boot_order if device is not BootDevice.CDROM]
             spec.touch()
             self.store.save_spec(spec)
+            self._publish_vm(TOPIC_VM_UPDATED, spec.id, name=spec.name, reason="iso_ejected")
             return spec
 
     def disk_usage(self, spec: VMSpec) -> tuple[int, int]:
@@ -544,6 +630,38 @@ class VmManager:
             virtual += info.virtual_size
             allocated += info.actual_size
         return virtual, allocated
+
+    @_recorded("Check disks")
+    def check_disks(self, vm_id: str, *, timeout: float = 1800.0) -> DiskCheckSummary:
+        """Run ``qemu-img check`` on every disk of a stopped VM.
+
+        Individual disk failures are reported in the result rather than raised so
+        that one damaged image does not hide the condition of the others.  Running
+        the check against a live VM is refused because ``qemu-img`` must not touch
+        disks that QEMU is writing.
+        """
+
+        with self.store.lock(vm_id, timeout=60):
+            spec = self.store.load_spec(vm_id)
+            runtime = self.backend.refresh(spec, self.store.load_runtime(vm_id))
+            if self._vm_busy(runtime):
+                raise InvalidStateError(
+                    "Disk consistency checks require the virtual machine to be stopped.",
+                    hint="Shut down the VM first so qemu-img can read the disks safely.",
+                )
+            results: list[DiskCheckResult] = []
+            for disk in spec.disks:
+                path = self.store.disk_path(spec, disk)
+                try:
+                    results.append(self.disks.check(path, timeout=timeout))
+                except OpenQVMError as exc:
+                    results.append(
+                        DiskCheckResult(path=path, ok=False, output=exc.message, error=exc.code.value)
+                    )
+            summary = DiskCheckSummary(vm_id=vm_id, results=results)
+        if not summary.ok:
+            log.warning("Disk check reported problems for VM '%s'", spec.name)
+        return summary
 
     # -- snapshots ------------------------------------------------------------
 
@@ -643,7 +761,7 @@ class VmManager:
                     else:
                         self.snapshots.delete_offline(spec, name)
                 raise
-            return SnapshotView(
+            view = SnapshotView(
                 name=record.name,
                 description=record.description,
                 created_at=record.created_at,
@@ -651,6 +769,8 @@ class VmManager:
                 vm_state=record.vm_state,
                 present=True,
             )
+        self._publish_snapshots(vm_id, name=record.name, reason="created")
+        return view
 
     @_recorded("Restore snapshot")
     def restore_snapshot(self, vm_id: str, name: str) -> VMRuntime:
@@ -672,6 +792,7 @@ class VmManager:
                     self.snapshots.restore_online(client, name, includes_memory=True)
                 finally:
                     client.close()
+                self._publish_snapshots(vm_id, name=name, reason="restored")
                 return self.backend.refresh(spec, runtime)
             if record is not None and record.includes_memory:
                 log.warning(
@@ -681,7 +802,8 @@ class VmManager:
                 )
             self._require_offline_safe(runtime)
             self.snapshots.restore_offline(spec, name)
-            return runtime
+        self._publish_snapshots(vm_id, name=name, reason="restored")
+        return runtime
 
     @_recorded("Delete snapshot")
     def delete_snapshot(self, vm_id: str, name: str) -> None:
@@ -699,6 +821,7 @@ class VmManager:
                 self.snapshots.delete_offline(spec, name)
             metadata = [record for record in self.store.load_snapshots(vm_id) if record.name != name]
             self.store.save_snapshots(vm_id, metadata)
+        self._publish_snapshots(vm_id, name=name, reason="deleted")
 
     # -- clone / export / import ---------------------------------------------
 

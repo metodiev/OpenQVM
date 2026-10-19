@@ -150,6 +150,10 @@ implemented. The UI explains the security implications of each mode.
   `flock` on POSIX). The lock file lives outside the VM directory so the
   directory can be quarantined while locked.
 - GUI operations run on a Qt thread pool; the interface remains responsive.
+- ``VmManager`` publishes typed events (``openqvm.core.events``) for create,
+  update, delete, lifecycle transitions, snapshot changes and finished operations.
+  The GUI subscribes and refreshes immediately; the periodic poll remains only as
+  a fallback for state changed by another process.
 - Runtime state is persisted before/after every transition.
 - A VM with a live QEMU process but an unreachable QMP socket is marked
   `unknown`; destructive disk operations are refused until the process is

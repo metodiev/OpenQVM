@@ -45,9 +45,10 @@ class DiskCheckResult:
     path: Path
     ok: bool
     output: str
+    error: str | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {"path": str(self.path), "ok": self.ok, "output": self.output}
+        return {"path": str(self.path), "ok": self.ok, "output": self.output, "error": self.error}
 
 
 class DiskManager:
