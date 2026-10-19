@@ -91,6 +91,19 @@ openqvm-cli doctor --probe
 
 If WHPX is not enabled, run PowerShell as administrator and enable the *Windows Hypervisor Platform* optional feature, then reboot. `openqvm-cli doctor --probe` verifies the accelerator by starting QEMU briefly.
 
+### Portable application (no Python install)
+
+Build a self-contained folder containing the GUI and the CLI:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+.\scripts\build.ps1 -Bundle
+dist\OpenQVM\OpenQVM.exe             # desktop application
+dist\OpenQVM\openqvm-cli.exe doctor  # same CLI, frozen
+```
+
+On Linux/macOS use `./scripts/build.sh --bundle`; the binaries land in `dist/OpenQVM/`. The build runs `OpenQVM.exe --self-test`, which constructs the main window with Qt's offscreen platform and exits, so a broken Qt/PySide6 bundle fails the build instead of failing at launch. The bundle is unsigned (SmartScreen may warn) and does not include QEMU — install QEMU separately so `doctor` can find it.
+
 ### Linux
 
 ```bash
@@ -153,7 +166,7 @@ pip-audit --desc                             # dependency vulnerability scan
 
 The end-to-end test needs QEMU and an Alpine ISO. It looks for `OPENQVM_TEST_ISO`, then for `alpine-virt-*.iso` in the OpenQVM ISO folder. It performs a real boot, verifies serial output, captures a VNC framebuffer, pauses/resumes, grows a disk live, snapshots, restores, exports, imports and clones. A second test changes the CD-ROM medium on a running VM through QMP. Set `OPENQVM_TEST_ISO` explicitly in CI or on other systems.
 
-The test suite includes 174 unit/integration tests plus the real-QEMU end-to-end tests. GUI tests run with Qt's offscreen platform. Property-based tests (Hypothesis) assert that arbitrary package bytes, archive layouts, manifests, settings and VM configurations are either accepted or rejected with a structured `OpenQVMError`, and that a rejected import never leaves a VM or staging directory behind.
+The test suite includes 175 unit/integration tests plus the real-QEMU end-to-end tests. GUI tests run with Qt's offscreen platform. Property-based tests (Hypothesis) assert that arbitrary package bytes, archive layouts, manifests, settings and VM configurations are either accepted or rejected with a structured `OpenQVMError`, and that a rejected import never leaves a VM or staging directory behind.
 
 ## Security
 

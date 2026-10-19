@@ -37,6 +37,11 @@ All notable changes to OpenQVM are documented here. The format follows
   installed swtpm is enough: Windows QEMU builds have no TPM support and are
   reported as unavailable. The wizard and VM details expose the switch, and
   `openqvm-cli create --tpm` sets it.
+- Packaging: the PyInstaller specification now builds a verified portable folder
+  containing the windowed GUI and the console CLI. `OpenQVM --self-test` builds
+  the main window offscreen and exits, so a broken Qt/PySide6 bundle fails at
+  build time; `scripts/build.ps1 -Bundle` / `scripts/build.sh --bundle` run the
+  self-test and archive the result, and CI does the same on Ubuntu and Windows.
 - Hardening: property-based tests (Hypothesis) assert that arbitrary package
   bytes, archive layouts, manifests, settings and VM configurations are rejected
   with structured errors and leave no partial state; a new CI job runs

@@ -38,6 +38,9 @@ dev = [
     "hypothesis>=6.100",
     "pip-audit>=2.7",
 ]
+packaging = [
+    "pyinstaller>=6.10",
+]
 
 [project.scripts]
 openqvm = "openqvm.__main__:main"

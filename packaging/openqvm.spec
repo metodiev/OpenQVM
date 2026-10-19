@@ -1,12 +1,20 @@
-# PyInstaller specification (experimental, not covered by automated tests).
+# PyInstaller specification for the portable Windows bundle.
 #
-# Build from the repository root after installing openqvm and PyInstaller:
-#   pyinstaller packaging/openqvm.spec
+# Build from the repository root (see scripts/build.ps1 -Bundle):
+#   python -m PyInstaller --noconfirm packaging/openqvm.spec
 #
-# The result is a one-directory bundle under dist/OpenQVM. Validate it on each
-# target platform and include the Qt/PySide6 license files before distributing.
+# The result is one directory, dist/OpenQVM, containing the windowed GUI
+# (OpenQVM.exe) and the console CLI (openqvm-cli.exe). It is not code-signed; see
+# docs/installation.md for the trust implications.
+
+import os
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+
+ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
+SRC = os.path.join(ROOT, "src")
+GUI_ENTRY = os.path.join(SRC, "openqvm", "__main__.py")
+CLI_ENTRY = os.path.join(SRC, "openqvm", "cli.py")
 
 hiddenimports = collect_submodules("openqvm") + [
     "PySide6.QtCore",
@@ -15,23 +23,37 @@ hiddenimports = collect_submodules("openqvm") + [
 ]
 datas = collect_data_files("openqvm")
 
-a = Analysis(
-    ["src/openqvm/__main__.py"],
-    pathex=["src"],
+gui_analysis = Analysis(
+    [GUI_ENTRY],
+    pathex=[SRC],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=["tkinter", "unittest", "pydoc_data"],
     noarchive=False,
 )
-pyz = PYZ(a.pure)
+cli_analysis = Analysis(
+    [CLI_ENTRY],
+    pathex=[SRC],
+    binaries=[],
+    datas=datas,
+    hiddenimports=collect_submodules("openqvm"),
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=["PySide6", "tkinter", "unittest", "pydoc_data"],
+    noarchive=False,
+)
 
-exe = EXE(
-    pyz,
-    a.scripts,
+gui_pyz = PYZ(gui_analysis.pure)
+cli_pyz = PYZ(cli_analysis.pure)
+
+gui = EXE(
+    gui_pyz,
+    gui_analysis.scripts,
     [],
     exclude_binaries=True,
     name="OpenQVM",
@@ -41,10 +63,26 @@ exe = EXE(
     upx=False,
     console=False,
 )
+cli = EXE(
+    cli_pyz,
+    cli_analysis.scripts,
+    [],
+    exclude_binaries=True,
+    name="openqvm-cli",
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    console=True,
+)
+
 coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
+    gui,
+    gui_analysis.binaries,
+    gui_analysis.datas,
+    cli,
+    cli_analysis.binaries,
+    cli_analysis.datas,
     strip=False,
     upx=False,
     name="OpenQVM",

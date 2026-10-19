@@ -68,6 +68,31 @@ may require enabling a host feature or joining the `kvm` group.
    openqvm
    ```
 
+### Portable Windows bundle (no Python install)
+
+To run OpenQVM on a machine without Python, build the self-contained bundle from a
+checkout:
+
+```powershell
+py -3.13 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -e ".[dev,packaging]"
+.\scripts\build.ps1 -Bundle
+```
+
+The result is `dist\OpenQVM\` (about 115 MB) containing:
+
+- `OpenQVM.exe` — the desktop application (windowed)
+- `openqvm-cli.exe` — the same CLI in frozen form
+- the PySide6/Qt runtime, bundled next to them
+
+Copy the whole folder to the target machine; QEMU must still be installed there.
+The build runs `OpenQVM.exe --self-test`, which constructs the main window with
+Qt's offscreen platform and exits non-zero if the bundle is broken. The bundle is
+not code-signed, so SmartScreen may show a warning the first time; verify the
+source or sign your own builds. Do not run it from a folder that other users can
+write to.
+
 The Windows QEMU installer also provides UEFI firmware under `share` (edk2
 `x86_64` code plus the i386/OVMF variable template). OpenQVM detects and uses it
 for UEFI VMs.

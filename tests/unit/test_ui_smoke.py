@@ -308,3 +308,13 @@ def test_tpm_controls_follow_the_detected_capability(tmp_path, qapp):
         window.deleteLater()
         qapp.processEvents()
         context.close()
+
+@pytest.mark.gui
+def test_entry_point_version_and_self_test(qapp, capsys):
+    from openqvm.__main__ import main
+
+    assert main(["--version"]) == 0
+    assert "OpenQVM" in capsys.readouterr().out
+
+    assert main(["--self-test"]) == 0
+    assert "self-test OK" in capsys.readouterr().out

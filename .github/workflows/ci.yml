@@ -57,6 +57,49 @@ jobs:
       - name: Audit installed packages
         run: pip-audit --desc
 
+  portable-bundle:
+    name: Portable bundle (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            exe: ""
+          - os: windows-latest
+            exe: ".exe"
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,packaging]"
+      - name: Build the bundle
+        run: python -m PyInstaller --noconfirm packaging/openqvm.spec
+      - name: Verify the CLI binary
+        shell: pwsh
+        run: |
+          ./dist/OpenQVM/openqvm-cli${{ matrix.exe }} --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify the GUI binary
+        shell: pwsh
+        run: |
+          $exe = "./dist/OpenQVM/OpenQVM${{ matrix.exe }}"
+          if ($IsWindows) {
+            # A GUI-subsystem executable is not awaited by the call operator.
+            $proc = Start-Process -FilePath $exe -ArgumentList "--self-test" -Wait -PassThru
+            if ($proc.ExitCode -ne 0) { exit $proc.ExitCode }
+          } else {
+            & $exe --self-test
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
   e2e-qemu:
     name: Real QEMU boot (Ubuntu, TCG)
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'

@@ -249,9 +249,23 @@ python -m pip install build
 python -m build
 ```
 
-This produces a wheel and sdist under `dist/`. An optional PyInstaller
-specification is in `packaging/openqvm.spec`; it is **experimental and not covered
-by automated tests**. No signed installers are produced yet.
+This produces a wheel and sdist under `dist/`.
+
+For a runnable, self-contained folder use the PyInstaller specification
+(`packaging/openqvm.spec`), which bundles the windowed GUI (`OpenQVM`) and the
+console CLI (`openqvm-cli`):
+
+```bash
+python -m pip install -e ".[dev,packaging]"
+python -m PyInstaller --noconfirm packaging/openqvm.spec
+dist/OpenQVM/OpenQVM --self-test     # OpenQVM.exe on Windows
+```
+
+`--self-test` builds the main window offscreen and exits, so the bundle is
+verified by the build itself (`scripts/build.ps1 -Bundle` / `scripts/build.sh
+--bundle` do this for you and archive the result on Windows). CI runs the same
+bundle job on Ubuntu and Windows. The bundles are **unsigned** and no
+MSI/MSIX/deb/rpm/macOS app bundle is produced yet.
 
 Release steps:
 
@@ -259,9 +273,10 @@ Release steps:
 2. Update `CHANGELOG.md`.
 3. Run lint, unit/integration tests and the real e2e test on each supported host.
 4. Build and test the wheel in a clean environment.
-5. Audit dependency licenses and vulnerabilities (`pip-audit`, `pip-licenses` or
+5. Build the portable bundle and run its `--self-test`.
+6. Audit dependency licenses and vulnerabilities (`pip-audit`, `pip-licenses` or
    equivalent) and update `THIRD_PARTY_NOTICES.md`.
-6. Tag the release and attach artifacts. State which platforms were actually
+7. Tag the release and attach artifacts. State which platforms were actually
    tested.
 
 ## CI

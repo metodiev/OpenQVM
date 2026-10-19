@@ -94,7 +94,9 @@ untested platforms are not claimed as verified.
 - [ ] Execute and publish Linux/KVM integration and e2e results
 - [ ] Execute and publish macOS/HVF results
 - [ ] Native Apple Silicon guest support
-- [ ] Platform installers and packages (MSI/MSIX, deb/rpm, macOS app bundle)
+- [x] Portable PyInstaller bundles with a GUI self-test (Windows verified;
+      the same spec builds on Linux/macOS in CI)
+- [ ] Native installers and packages (MSI/MSIX, deb/rpm, macOS app bundle)
 - [ ] Code signing/notarization
 
 ## Phase 6 — Production readiness (partial)
