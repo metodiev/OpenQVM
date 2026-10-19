@@ -76,9 +76,10 @@ class SnapshotService:
 
     def create_offline(self, spec: VMSpec, name: str, description: str = "") -> SnapshotRecord:
         disks = _snapshot_disks(spec)
-        existing = {info.name for info in self.list_offline(spec)}
-        if name in existing:
-            raise ValidationError(f"A snapshot named '{name}' already exists.")
+        for disk in disks:
+            existing_tags = {info.name for info in self._list_disk_snapshots(self.store.disk_path(spec, disk))}
+            if name in existing_tags:
+                raise ValidationError(f"A snapshot named '{name}' already exists.")
         created: list[Path] = []
         try:
             for disk in disks:

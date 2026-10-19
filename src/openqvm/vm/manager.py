@@ -297,6 +297,7 @@ class VmManager:
                     details={"expected": expected_revision, "actual": existing.revision},
                 )
             runtime = self.store.load_runtime(spec.id)
+            runtime = self.backend.refresh(existing, runtime)
             if self._vm_busy(runtime):
                 hardware_changed = (
                     existing.cpu != spec.cpu
@@ -432,7 +433,7 @@ class VmManager:
     ) -> VMSpec:
         with self.store.lock(vm_id, timeout=30):
             spec = self.store.load_spec(vm_id)
-            runtime = self.store.load_runtime(vm_id)
+            runtime = self.backend.refresh(spec, self.store.load_runtime(vm_id))
             if self._vm_busy(runtime):
                 raise InvalidStateError("Disks cannot be added to a running virtual machine.")
             from openqvm.core.ids import new_id
@@ -464,7 +465,7 @@ class VmManager:
     def remove_disk(self, vm_id: str, disk_id: str) -> VMSpec:
         with self.store.lock(vm_id, timeout=30):
             spec = self.store.load_spec(vm_id)
-            runtime = self.store.load_runtime(vm_id)
+            runtime = self.backend.refresh(spec, self.store.load_runtime(vm_id))
             if self._vm_busy(runtime):
                 raise InvalidStateError("Disks cannot be removed from a running virtual machine.")
             disk = spec.disk_by_id(disk_id)
@@ -497,7 +498,7 @@ class VmManager:
     def attach_iso(self, vm_id: str, iso_path: str) -> VMSpec:
         with self.store.lock(vm_id, timeout=30):
             spec = self.store.load_spec(vm_id)
-            runtime = self.store.load_runtime(vm_id)
+            runtime = self.backend.refresh(spec, self.store.load_runtime(vm_id))
             if self._vm_busy(runtime):
                 raise InvalidStateError(
                     "Installation images can only be attached while the VM is stopped.",
@@ -518,7 +519,7 @@ class VmManager:
     def eject_iso(self, vm_id: str) -> VMSpec:
         with self.store.lock(vm_id, timeout=30):
             spec = self.store.load_spec(vm_id)
-            runtime = self.store.load_runtime(vm_id)
+            runtime = self.backend.refresh(spec, self.store.load_runtime(vm_id))
             if self._vm_busy(runtime):
                 raise InvalidStateError("The installation image cannot be ejected while the VM is running.")
             spec.cdrom_iso = None
