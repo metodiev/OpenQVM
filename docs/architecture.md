@@ -123,6 +123,13 @@ by the real-QEMU e2e test, which captures a real framebuffer.
   verified after creation.
 - Resizing only grows a disk. Shrinking is refused because it can corrupt the
   guest file system.
+- Offline resizing uses `qemu-img resize`. While the VM is running, OpenQVM uses
+  QEMU's `block_resize` on the drive's block backend and verifies the size QEMU
+  reports. The guest must rescan the block device to observe the change.
+- A CD-ROM drive is always present. Attaching, replacing or ejecting media on a
+  running VM uses `blockdev-change-medium` / tray commands over QMP. QEMU's media
+  lock is respected: while the guest is using the medium the operation fails with
+  an explanation, and `force` is an explicit, documented override.
 - Offline snapshots use `qemu-img snapshot` and are **disk-only**.
 - Online snapshots first attempt QEMU's `savevm`, which includes RAM when the
   accelerator supports it. If the accelerator cannot save memory (WHPX reports

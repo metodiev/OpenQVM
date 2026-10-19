@@ -118,6 +118,20 @@ window.grab().save("dashboard.png")
   `MainWindow._subscribe_events`) because publishing may happen on a worker
   thread; never touch widgets from the subscriber callback.
 
+## Live storage operations
+
+- Offline changes use `qemu-img`.
+- Live disk growth uses QMP `block_resize` with the drive's `id` (`drive<N>`) and
+  then verifies the size QEMU reports. The guest may need to rescan the block
+  device and grow its file system.
+- The CD-ROM drive (`cdrom0`) always exists. Live media changes use
+  `blockdev-change-medium`/tray commands keyed by the device's QOM path.
+- QEMU's media lock is respected: if the guest is using the medium, the operation
+  fails with an actionable message. `force=True` (CLI `--force`) overrides the
+  lock and is documented as potentially disruptive.
+- Never bypass the lock automatically; a forced eject can break a guest that has
+  the media mounted.
+
 ## Snapshot semantics
 
 - Offline (`qemu-img snapshot`): disk-only, crash-consistent at best.

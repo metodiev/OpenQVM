@@ -154,19 +154,24 @@ def _build_parser() -> argparse.ArgumentParser:
     import_parser.add_argument("--name", help="Name for the imported VM.")
     import_parser.set_defaults(func=_cmd_import)
 
-    resize = subparsers.add_parser("resize", help="Enlarge a disk (VM must be stopped).")
+    resize = subparsers.add_parser("resize", help="Enlarge a disk (offline by default).")
     resize.add_argument("vm")
     resize.add_argument("disk_id")
     resize.add_argument("size_gib", type=int)
+    resize.add_argument("--live", action="store_true", help="Grow the disk while the VM is running (QEMU block_resize).")
     resize.set_defaults(func=_cmd_resize)
 
-    attach = subparsers.add_parser("attach-iso", help="Attach an ISO to a stopped VM.")
+    attach = subparsers.add_parser("attach-iso", help="Attach an ISO to a VM.")
     attach.add_argument("vm")
     attach.add_argument("iso", type=Path)
+    attach.add_argument("--live", action="store_true", help="Change the medium while the VM is running.")
+    attach.add_argument("--force", action="store_true", help="Override QEMU's media lock (may disrupt the guest).")
     attach.set_defaults(func=_cmd_attach_iso)
 
-    eject = subparsers.add_parser("eject-iso", help="Eject the ISO from a stopped VM.")
+    eject = subparsers.add_parser("eject-iso", help="Eject the ISO from a VM.")
     eject.add_argument("vm")
+    eject.add_argument("--live", action="store_true", help="Eject the medium while the VM is running.")
+    eject.add_argument("--force", action="store_true", help="Override QEMU's media lock (may disrupt the guest).")
     eject.set_defaults(func=_cmd_eject_iso)
 
     logs = subparsers.add_parser("logs", help="Show QEMU and serial log tails.")
@@ -566,24 +571,39 @@ def _cmd_import(args: argparse.Namespace) -> int:
 def _cmd_resize(args: argparse.Namespace) -> int:
     context = _manager(args)
     spec = _resolve_vm(context.manager, args.vm)
-    updated = context.manager.resize_disk(spec.id, args.disk_id, args.size_gib * 1024**3)
-    _print(args, {"vm": updated.to_dict()}, text=f"Resized disk to {args.size_gib} GiB. Guest file system must be extended separately.")
+    updated = context.manager.resize_disk(spec.id, args.disk_id, args.size_gib * 1024**3, live=args.live)
+    mode = "live" if args.live else "offline"
+    message = (
+        f"Resized disk ({mode}) to {args.size_gib} GiB. "
+        "The guest may need to rescan the block device and grow its file system."
+    )
+    _print(args, {"vm": updated.to_dict(), "live": args.live}, text=message)
     return EXIT_OK
 
 
 def _cmd_attach_iso(args: argparse.Namespace) -> int:
     context = _manager(args)
     spec = _resolve_vm(context.manager, args.vm)
-    updated = context.manager.attach_iso(spec.id, str(args.iso.expanduser().resolve()))
-    _print(args, {"vm": updated.to_dict()}, text=f"Attached {updated.cdrom_iso}.")
+    updated = context.manager.attach_iso(
+        spec.id, str(args.iso.expanduser().resolve()), live=args.live, force=args.force
+    )
+    _print(
+        args,
+        {"vm": updated.to_dict(), "live": args.live},
+        text=f"Attached {updated.cdrom_iso}" + (" (live)." if args.live else "."),
+    )
     return EXIT_OK
 
 
 def _cmd_eject_iso(args: argparse.Namespace) -> int:
     context = _manager(args)
     spec = _resolve_vm(context.manager, args.vm)
-    updated = context.manager.eject_iso(spec.id)
-    _print(args, {"vm": updated.to_dict()}, text="Ejected the installation image.")
+    updated = context.manager.eject_iso(spec.id, live=args.live, force=args.force)
+    _print(
+        args,
+        {"vm": updated.to_dict(), "live": args.live},
+        text="Ejected the installation image" + (" (live)." if args.live else "."),
+    )
     return EXIT_OK
 
 

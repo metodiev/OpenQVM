@@ -188,6 +188,7 @@ QEMU itself is removed with the platform package manager.
 | Guest installer cannot see the disk | The selected bus needs guest drivers. Use IDE for Windows installers without VirtIO drivers, or provide the drivers. |
 | Black console | The guest may still be booting, VNC may be disabled in the VM configuration, or the guest does not initialize the display. Check the serial console tab. |
 | Snapshot is "disk only" | The accelerator cannot save guest memory (WHPX commonly). Restore it while the VM is stopped. |
+| Live medium change refused | The guest is using the CD-ROM. Stop the VM, or use `--force` and accept the risk described in the error hint. |
 | `The QEMU control interface is unavailable` | The VM process is alive but QMP is unreachable. Use **Force stop** before disk operations. |
 | Import rejected | The package failed traversal, entry, compression-ratio or checksum validation. Obtain a new export. |
 

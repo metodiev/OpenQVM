@@ -12,6 +12,7 @@ from openqvm.core.errors import (
     InvalidStateError,
     OperationFailedError,
     SecurityError,
+    UnsupportedFeatureError,
     ValidationError,
 )
 from openqvm.core.logging import get_logger
@@ -25,6 +26,7 @@ from openqvm.vm.qemu.command import (
     allocate_vnc_display,
     build_launch_plan,
 )
+from openqvm.vm.qemu.medium import find_cdrom_device, medium_filename
 from openqvm.vm.qemu.process import (
     ProcessInfo,
     launch_qemu,
@@ -33,7 +35,7 @@ from openqvm.vm.qemu.process import (
     terminate_process,
     wait_for_exit,
 )
-from openqvm.vm.qemu.qmp import QmpClient
+from openqvm.vm.qemu.qmp import QmpClient, QmpCommandError
 
 log = get_logger("qemu.backend")
 
@@ -45,8 +47,8 @@ class QemuBackend:
         supports_pause=True,
         supports_live_snapshots=True,
         supports_memory_snapshots=True,
-        supports_live_iso_change=False,
-        supports_online_disk_resize=False,
+        supports_live_iso_change=True,
+        supports_online_disk_resize=True,
     )
 
     def __init__(self, paths: AppPaths, store: VmStore, platform: PlatformCapabilities) -> None:
@@ -124,6 +126,134 @@ class QemuBackend:
         client = QmpClient("127.0.0.1", runtime.qmp_port, timeout=timeout)
         client.connect()
         return client
+
+    # -- live storage operations ---------------------------------------------
+
+    def _cdrom_device(self, client: QmpClient) -> dict:
+        blocks = client.execute("query-block")
+        if not isinstance(blocks, list):
+            raise OperationFailedError("QEMU returned an invalid block device list.")
+        entry = find_cdrom_device(blocks)
+        if entry is None:
+            raise UnsupportedFeatureError(
+                "This virtual machine has no CD-ROM drive.",
+                hint="Restart the VM so OpenQVM can add one, then try again.",
+            )
+        if not entry.get("qdev"):
+            raise OperationFailedError(
+                "QEMU did not report the CD-ROM device path.",
+                hint="Check the QEMU version and the VM log.",
+            )
+        return entry
+
+    @staticmethod
+    def _medium_error(error: QmpCommandError) -> OperationFailedError:
+        locked = "locked" in error.message.lower()
+        hint = (
+            "The guest is currently using the media. Stop the VM, or retry with force enabled "
+            "(openqvm-cli --force), which can disrupt the guest."
+            if locked
+            else "Check the image path and the QEMU log."
+        )
+        return OperationFailedError(
+            "The installation medium could not be changed.",
+            hint=hint,
+            details={"qmp_error": error.message},
+            cause=error,
+        )
+
+    def change_medium(
+        self, spec: VMSpec, runtime: VMRuntime, iso_path: str | None, *, force: bool = False
+    ) -> None:
+        """Insert, replace or eject the CD-ROM medium while the VM is running."""
+
+        client = self.qmp_client(runtime, timeout=20.0)
+        try:
+            entry = self._cdrom_device(client)
+            qdev = str(entry["qdev"])
+            inserted = bool(entry.get("inserted"))
+            if entry.get("locked") and not force and (inserted or iso_path is not None):
+                raise OperationFailedError(
+                    "The guest is currently using the CD-ROM medium.",
+                    hint="Stop the VM, or retry with force enabled (openqvm-cli --force), "
+                    "which can disrupt the guest.",
+                    details={"device": entry.get("device"), "medium": medium_filename(entry)},
+                )
+            try:
+                if iso_path is not None:
+                    arguments: dict[str, object] = {
+                        "id": qdev,
+                        "filename": iso_path,
+                        "format": "raw",
+                    }
+                    if force:
+                        arguments["force"] = True
+                    client.execute("blockdev-change-medium", arguments)
+                else:
+                    if inserted and not entry.get("tray_open"):
+                        open_arguments: dict[str, object] = {"id": qdev}
+                        if force:
+                            open_arguments["force"] = True
+                        client.execute("blockdev-open-tray", open_arguments)
+                        entry = self._cdrom_device(client)
+                        if not entry.get("tray_open"):
+                            raise OperationFailedError(
+                                "The guest did not release the CD-ROM tray.",
+                                hint="Stop the VM, or retry with force enabled "
+                                "(openqvm-cli --force), which can disrupt the guest.",
+                            )
+                    if inserted:
+                        client.execute("blockdev-remove-medium", {"id": qdev})
+                    client.execute("blockdev-close-tray", {"id": qdev})
+            except QmpCommandError as exc:
+                raise self._medium_error(exc) from exc
+            entry = self._cdrom_device(client)
+        finally:
+            client.close()
+        current = medium_filename(entry)
+        if iso_path is None:
+            if current is not None:
+                raise OperationFailedError(
+                    "QEMU reported that the medium is still present after ejecting it.",
+                    details={"medium": current},
+                )
+        elif current is None or Path(current).resolve() != Path(iso_path).resolve():
+            raise OperationFailedError(
+                "QEMU did not report the requested medium after changing it.",
+                details={"expected": iso_path, "actual": current},
+            )
+        log.info("Changed CD-ROM medium for %s to %s", spec.name, iso_path or "(empty)")
+
+    def resize_disk_live(
+        self, spec: VMSpec, runtime: VMRuntime, disk_index: int, new_size_bytes: int
+    ) -> None:
+        """Grow a disk through QEMU while the VM is running."""
+
+        device = f"drive{disk_index}"
+        client = self.qmp_client(runtime, timeout=20.0)
+        try:
+            try:
+                client.execute("block_resize", {"device": device, "size": new_size_bytes})
+            except QmpCommandError as exc:
+                raise OperationFailedError(
+                    "QEMU could not resize the running disk.",
+                    hint="Verify that the disk is attached with an id QEMU can resize and that it is a qcow2 image.",
+                    details={"qmp_error": exc.message, "device": device},
+                    cause=exc,
+                ) from exc
+            blocks = client.execute("query-block")
+            entry = next((item for item in blocks if item.get("device") == device), None)
+            reported = None
+            if isinstance(entry, dict):
+                reported = ((entry.get("inserted") or {}).get("image") or {}).get("virtual-size")
+            if reported != new_size_bytes:
+                raise OperationFailedError(
+                    "QEMU did not apply the requested disk size.",
+                    details={"expected": new_size_bytes, "actual": reported, "device": device},
+                )
+        finally:
+            client.close()
+        log.info("Live-resized %s on %s to %s bytes", device, spec.name, new_size_bytes)
 
     # -- lifecycle ------------------------------------------------------------
 

@@ -15,6 +15,7 @@ from openqvm.core.models import BootDevice, DiskBus, GraphicsAdapter, VMSpec
 from openqvm.core.paths import AppPaths
 from openqvm.networking import build_netdev_arguments
 from openqvm.platform.capabilities import PlatformCapabilities
+from openqvm.vm.qemu.medium import CDROM_DEVICE_ID
 
 VNC_HOST = "127.0.0.1"
 QMP_HOST = "127.0.0.1"
@@ -84,6 +85,25 @@ def _disk_arguments(spec: VMSpec, paths: AppPaths) -> list[str]:
         else:
             arguments.extend(["-drive", f"{common},if=ide,index={index},id=drive{index}"])
     return arguments
+
+
+def _cdrom_arguments(spec: VMSpec) -> list[str]:
+    """Always provide an IDE CD-ROM so media can be changed while running.
+
+    The drive is empty when no image is attached; QEMU then skips it during boot
+    and the tray can be loaded later over QMP.
+    """
+
+    options = ["if=none", f"id={CDROM_DEVICE_ID}", "media=cdrom", "readonly=on"]
+    if spec.cdrom_iso:
+        iso = Path(spec.cdrom_iso)
+        if not iso.is_file():
+            raise ValidationError(
+                "The attached installation image is missing.",
+                hint="Attach an existing ISO file or eject the current one.",
+            )
+        options.extend([f"file={escape_option(str(iso))}", "format=raw"])
+    return ["-drive", ",".join(options), "-device", f"ide-cd,drive={CDROM_DEVICE_ID}"]
 
 
 def _firmware_arguments(spec: VMSpec, capabilities: PlatformCapabilities, variables: Path | None) -> list[str]:
@@ -161,15 +181,7 @@ def build_launch_plan(
 
     argv.extend(_firmware_arguments(spec, capabilities, firmware_vars))
     argv.extend(_disk_arguments(spec, paths))
-
-    if spec.cdrom_iso:
-        iso = Path(spec.cdrom_iso)
-        if not iso.is_file():
-            raise ValidationError(
-                "The attached installation image is missing.",
-                hint="Attach an existing ISO file or eject the current one.",
-            )
-        argv.extend(["-cdrom", escape_option(str(iso))])
+    argv.extend(_cdrom_arguments(spec))
 
     for index, nic in enumerate(spec.nics):
         netdev, device = build_netdev_arguments(nic, index)

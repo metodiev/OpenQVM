@@ -104,8 +104,26 @@ def test_iso_and_boot_order(tmp_path):
         name="ISO VM", guest_os=GuestOS.LINUX, host=HOST, cdrom_iso=str(iso)
     )
     plan = make_plan(tmp_path, spec)
-    assert argv_value(plan.argv, "-cdrom") == str(iso)
+    drive_values = [plan.argv[i + 1] for i, arg in enumerate(plan.argv) if arg == "-drive"]
+    cdrom = next(value for value in drive_values if "id=cdrom0" in value)
+    assert f"file={iso}" in cdrom
+    assert "format=raw" in cdrom
+    assert "readonly=on" in cdrom
+    device_values = [plan.argv[i + 1] for i, arg in enumerate(plan.argv) if arg == "-device"]
+    assert "ide-cd,drive=cdrom0" in device_values
     assert argv_value(plan.argv, "-boot") == "order=dc,menu=off"
+
+
+def test_cdrom_drive_is_always_present(tmp_path):
+    spec = create_vm_spec(name="No ISO VM", guest_os=GuestOS.LINUX, host=HOST)
+    plan = make_plan(tmp_path, spec)
+    drive_values = [plan.argv[i + 1] for i, arg in enumerate(plan.argv) if arg == "-drive"]
+    cdrom = next(value for value in drive_values if "id=cdrom0" in value)
+    assert "media=cdrom" in cdrom
+    assert "file=" not in cdrom
+    device_values = [plan.argv[i + 1] for i, arg in enumerate(plan.argv) if arg == "-device"]
+    assert "ide-cd,drive=cdrom0" in device_values
+    assert "-cdrom" not in plan.argv
 
 
 def test_ide_disk_uses_ide_and_has_block_id(tmp_path):

@@ -21,6 +21,7 @@ from openqvm.core.errors import (
     ConflictError,
     InvalidStateError,
     OpenQVMError,
+    UnsupportedFeatureError,
     ValidationError,
     ValidationIssue,
     error_from_exception,
@@ -50,7 +51,13 @@ from openqvm.core.models import (
     VMStatus,
 )
 from openqvm.core.paths import AppPaths
-from openqvm.core.validation import HostResources, validate_snapshot_name, validate_vm_name, validate_vm_spec
+from openqvm.core.validation import (
+    HostResources,
+    validate_disk_resize,
+    validate_snapshot_name,
+    validate_vm_name,
+    validate_vm_spec,
+)
 from openqvm.networking import security_note
 from openqvm.platform.capabilities import PlatformCapabilities
 from openqvm.platform.compatibility import check_compatibility
@@ -479,28 +486,45 @@ class VmManager:
     # -- storage --------------------------------------------------------------
 
     @_recorded("Resize disk")
-    def resize_disk(self, vm_id: str, disk_id: str, new_size_bytes: int) -> VMSpec:
-        with self.store.lock(vm_id, timeout=30):
+    def resize_disk(self, vm_id: str, disk_id: str, new_size_bytes: int, *, live: bool = False) -> VMSpec:
+        with self.store.lock(vm_id, timeout=60):
             spec = self.store.load_spec(vm_id)
             runtime = self.backend.refresh(spec, self.store.load_runtime(vm_id))
-            if self._vm_busy(runtime):
-                raise InvalidStateError(
-                    "A disk attached to a running virtual machine cannot be resized.",
-                    hint="Shut down the VM first.",
-                )
             disk = spec.disk_by_id(disk_id)
             if disk is None:
                 raise ValidationError("The selected disk was not found.")
-            self.disks.resize(self.store.disk_path(spec, disk), disk, new_size_bytes)
+            issues = validate_disk_resize(disk, new_size_bytes)
+            if issues:
+                raise ValidationError("The new disk size is not valid.", issues=issues)
+            busy = self._vm_busy(runtime)
+            if busy and not live:
+                raise InvalidStateError(
+                    "A disk attached to a running virtual machine can only be grown with a live resize.",
+                    hint="Shut down the VM, retry with live resize, or use 'openqvm-cli resize --live'.",
+                )
+            if busy:
+                if not self.backend.capabilities.supports_online_disk_resize:
+                    raise UnsupportedFeatureError(
+                        "This backend cannot resize disks while the VM is running.",
+                        hint="Shut down the VM and resize the disk offline.",
+                    )
+                index = next(
+                    position for position, item in enumerate(spec.disks) if item.id == disk_id
+                )
+                self.backend.resize_disk_live(spec, runtime, index, new_size_bytes)
+                reason = "disk_resized_live"
+            else:
+                self.disks.resize(self.store.disk_path(spec, disk), disk, new_size_bytes)
+                reason = "disk_resized"
             updated = replace(disk, size_bytes=new_size_bytes)
             spec.disks = [updated if item.id == disk_id else item for item in spec.disks]
+            spec.touch()
             try:
-                spec.touch()
                 self.store.save_spec(spec)
             except Exception:
                 log.exception("Disk %s was resized but the VM configuration could not be saved", disk.filename)
                 raise
-            self._publish_vm(TOPIC_VM_UPDATED, spec.id, name=spec.name, reason="disk_resized")
+            self._publish_vm(TOPIC_VM_UPDATED, spec.id, name=spec.name, reason=reason)
             return spec
 
     @_recorded("Add disk")
@@ -579,41 +603,69 @@ class VmManager:
             return spec
 
     @_recorded("Attach ISO")
-    def attach_iso(self, vm_id: str, iso_path: str) -> VMSpec:
-        with self.store.lock(vm_id, timeout=30):
+    def attach_iso(self, vm_id: str, iso_path: str, *, live: bool = False, force: bool = False) -> VMSpec:
+        with self.store.lock(vm_id, timeout=60):
             spec = self.store.load_spec(vm_id)
             runtime = self.backend.refresh(spec, self.store.load_runtime(vm_id))
-            if self._vm_busy(runtime):
-                raise InvalidStateError(
-                    "Installation images can only be attached while the VM is stopped.",
-                    hint="Shut down the VM, attach the ISO, then start it.",
-                )
             info = inspect_iso(iso_path)
-            spec.cdrom_iso = str(info.path)
-            if "cdrom" not in [device.value for device in spec.boot_order]:
-                from openqvm.core.models import BootDevice
+            from openqvm.core.models import BootDevice
 
-                spec.boot_order = [BootDevice.CDROM, *spec.boot_order]
-            self._raise_for_issues(spec, exclude_vm_id=vm_id)
+            boot_order = list(spec.boot_order)
+            if BootDevice.CDROM not in boot_order:
+                boot_order = [BootDevice.CDROM, *boot_order]
+            candidate = replace(spec, cdrom_iso=str(info.path), boot_order=boot_order)
+            self._raise_for_issues(candidate, exclude_vm_id=vm_id)
+            busy = self._vm_busy(runtime)
+            if busy and not live:
+                raise InvalidStateError(
+                    "Installation images can only be attached to a stopped VM without live change.",
+                    hint="Shut down the VM, or retry with live change.",
+                )
+            if busy:
+                if not self.backend.capabilities.supports_live_iso_change:
+                    raise UnsupportedFeatureError(
+                        "This backend cannot change the installation medium while the VM is running.",
+                        hint="Shut down the VM and attach the ISO.",
+                    )
+                self.backend.change_medium(spec, runtime, str(info.path), force=force)
+                reason = "iso_attached_live"
+            else:
+                reason = "iso_attached"
+            spec.cdrom_iso = str(info.path)
+            spec.boot_order = boot_order
             spec.touch()
             self.store.save_spec(spec)
-            self._publish_vm(TOPIC_VM_UPDATED, spec.id, name=spec.name, reason="iso_attached")
+            self._publish_vm(TOPIC_VM_UPDATED, spec.id, name=spec.name, reason=reason)
             return spec
 
     @_recorded("Eject ISO")
-    def eject_iso(self, vm_id: str) -> VMSpec:
-        with self.store.lock(vm_id, timeout=30):
+    def eject_iso(self, vm_id: str, *, live: bool = False, force: bool = False) -> VMSpec:
+        with self.store.lock(vm_id, timeout=60):
             spec = self.store.load_spec(vm_id)
             runtime = self.backend.refresh(spec, self.store.load_runtime(vm_id))
-            if self._vm_busy(runtime):
-                raise InvalidStateError("The installation image cannot be ejected while the VM is running.")
-            spec.cdrom_iso = None
+            busy = self._vm_busy(runtime)
+            if busy and not live:
+                raise InvalidStateError(
+                    "The installation image can only be ejected from a stopped VM without live change.",
+                    hint="Shut down the VM, or retry with live change.",
+                )
+            if busy:
+                if not self.backend.capabilities.supports_live_iso_change:
+                    raise UnsupportedFeatureError(
+                        "This backend cannot change the installation medium while the VM is running.",
+                        hint="Shut down the VM and eject the ISO.",
+                    )
+                self.backend.change_medium(spec, runtime, None, force=force)
+                reason = "iso_ejected_live"
+            else:
+                reason = "iso_ejected"
             from openqvm.core.models import BootDevice
 
+            spec.cdrom_iso = None
             spec.boot_order = [device for device in spec.boot_order if device is not BootDevice.CDROM]
             spec.touch()
             self.store.save_spec(spec)
-            self._publish_vm(TOPIC_VM_UPDATED, spec.id, name=spec.name, reason="iso_ejected")
+            self._publish_vm(TOPIC_VM_UPDATED, spec.id, name=spec.name, reason=reason)
             return spec
 
     def disk_usage(self, spec: VMSpec) -> tuple[int, int]:

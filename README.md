@@ -14,9 +14,9 @@
 | Persistent VM configuration | ✅ Atomic JSON store with backup recovery |
 | Real guest display in the app | ✅ Embedded VNC client (RFB, loopback) |
 | Serial console and QEMU log | ✅ Streamed into the console window |
-| Virtual disks (qcow2/raw, VirtIO/IDE) | ✅ Create, add, detach and grow |
+| Virtual disks (qcow2/raw, VirtIO/IDE) | ✅ Create, add, detach, grow offline or live |
 | Disk consistency check | ✅ `qemu-img check` from the UI and `openqvm-cli check` |
-| Installation ISO attach/eject | ✅ While the VM is stopped |
+| Installation ISO attach/eject | ✅ Offline and live through QEMU medium change |
 | Snapshots | ✅ Offline disk snapshots; online snapshots use memory state when the accelerator supports it, otherwise a disk-only fallback |
 | Clone | ✅ Stopped VMs, independent disk copies |
 | Export/import (`.oqv`) | ✅ ZIP package with SHA-256 integrity checks |
@@ -39,9 +39,9 @@
 | --- | --- |
 | ![Wizard](docs/images/create-wizard.png) | ![Light theme](docs/images/dashboard-light.png) |
 
-| Storage and disk checks | Snapshots |
+| Storage and live changes | Snapshots |
 | --- | --- |
-| ![Storage](docs/images/vm-storage.png) | ![Snapshots](docs/images/vm-snapshots.png) |
+| ![Storage](docs/images/vm-storage-live.png) | ![Snapshots](docs/images/vm-snapshots.png) |
 
 ## Architecture in one paragraph
 
@@ -130,6 +130,8 @@ openqvm-cli start <vm-id>
 openqvm-cli status <vm-id>
 openqvm-cli snapshot create <vm-id> before-upgrade --description "Fresh install"
 openqvm-cli check <vm-id>
+openqvm-cli attach-iso <vm-id> /path/to/tools.iso --live
+openqvm-cli resize <vm-id> <disk-id> 40 --live
 openqvm-cli stop <vm-id> --force
 openqvm-cli export <vm-id> ./ubuntu.oqv
 openqvm-cli import ./ubuntu.oqv
@@ -144,9 +146,9 @@ pytest tests/unit tests/integration -q       # no QEMU required
 pytest tests/end_to_end -m e2e -q -s         # real QEMU boot test
 ```
 
-The end-to-end test needs QEMU and an Alpine ISO. It looks for `OPENQVM_TEST_ISO`, then for `alpine-virt-*.iso` in the OpenQVM ISO folder. It performs a real boot, verifies serial output, captures a VNC framebuffer, pauses/resumes, snapshots, restores, exports, imports and clones. Set `OPENQVM_TEST_ISO` explicitly in CI or on other systems.
+The end-to-end test needs QEMU and an Alpine ISO. It looks for `OPENQVM_TEST_ISO`, then for `alpine-virt-*.iso` in the OpenQVM ISO folder. It performs a real boot, verifies serial output, captures a VNC framebuffer, pauses/resumes, grows a disk live, snapshots, restores, exports, imports and clones. A second test changes the CD-ROM medium on a running VM through QMP. Set `OPENQVM_TEST_ISO` explicitly in CI or on other systems.
 
-The test suite includes 75 unit/integration tests plus the real-QEMU end-to-end test. GUI tests run with Qt's offscreen platform.
+The test suite includes 91 unit/integration tests plus the real-QEMU end-to-end tests. GUI tests run with Qt's offscreen platform.
 
 ## Security
 
@@ -163,7 +165,8 @@ Known security-related limitations in this alpha:
 - **Validated host:** the implementation was built and validated on Windows 11/AMD64 with QEMU 11.1, WHPX and TCG, including a real Alpine Linux boot. The Linux/KVM path is the intended primary deployment target but was not executed in this development environment; macOS is untested. The QEMU backend, command builder and platform adapters are shared across all three.
 - Bridged and host-only networking are not implemented. The UI explains why instead of pretending they work.
 - Shared folders use virtio-9p and are only enabled on Linux hosts.
-- Live ISO changes, live disk resize, clipboard integration and USB passthrough are not implemented.
+- Live ISO changes and live disk growth use QEMU's medium and block-resize commands. The guest may keep using the old medium (QEMU then refuses without force) and may need to rescan a grown disk before it sees the new size. Forcing a medium change can disrupt a guest that has the media mounted.
+- Clipboard integration and USB passthrough are not implemented.
 - Long-running operations have timeouts and force-stop recovery, but they cannot be cancelled midway from the UI yet.
 - Online snapshots include guest memory only when QEMU can save it (KVM/TCG typically can; WHPX cannot). The fallback is an explicitly labelled disk-only snapshot that must be restored while the VM is stopped.
 - Cloning does not copy snapshot history. Use export/import if you need a disk with its internal snapshots.

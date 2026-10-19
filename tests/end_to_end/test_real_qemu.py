@@ -13,9 +13,11 @@ from pathlib import Path
 import pytest
 
 from openqvm.app.context import AppContext
+from openqvm.core.errors import InvalidStateError
 from openqvm.core.factory import create_vm_spec
-from openqvm.core.models import GuestOS, VMStatus
+from openqvm.core.models import BootDevice, GuestOS, VMStatus
 from openqvm.core.validation import HostResources
+from openqvm.vm.qemu.medium import find_cdrom_device, medium_filename
 from openqvm.vm.rfb import RfbClient
 
 
@@ -92,6 +94,13 @@ def test_real_qemu_boot_snapshot_export(tmp_path):
         assert manager.pause_vm(vm_id).status is VMStatus.PAUSED
         assert manager.resume_vm(vm_id).status is VMStatus.RUNNING
 
+        disk = manager.get_spec(vm_id).disks[0]
+        resized_to = disk.size_bytes + 1024**3
+        with pytest.raises(InvalidStateError):
+            manager.resize_disk(vm_id, disk.id, resized_to)
+        manager.resize_disk(vm_id, disk.id, resized_to, live=True)
+        assert manager.get_spec(vm_id).disks[0].size_bytes == resized_to
+
         snapshot = manager.create_snapshot(vm_id, "e2e-snap", "created by e2e test")
         assert snapshot.name == "e2e-snap"
         assert any(view.name == "e2e-snap" for view in manager.list_snapshots(vm_id))
@@ -108,6 +117,8 @@ def test_real_qemu_boot_snapshot_export(tmp_path):
         export_path = tmp_path / "e2e-export.oqv"
         disk_check = manager.check_disks(vm_id)
         assert disk_check.ok, [result.output for result in disk_check.results]
+        stored_size = manager.disks.info(manager.store.disk_path(spec, manager.get_spec(vm_id).disks[0])).virtual_size
+        assert stored_size == resized_to
         exported = manager.export_vm(vm_id, export_path)
         assert exported.path.is_file() and exported.size_bytes > 0
         imported = manager.import_vm(export_path)
@@ -120,6 +131,71 @@ def test_real_qemu_boot_snapshot_export(tmp_path):
 
         manager.delete_vm(imported.spec.id)
         manager.delete_vm(clone.spec.id)
+        manager.delete_vm(vm_id)
+    finally:
+        if running:
+            try:
+                manager.stop_vm(vm_id, force=True, timeout=10)
+            except Exception:
+                pass
+        context.close()
+
+
+@pytest.mark.e2e
+@pytest.mark.timeout(240)
+def test_real_qemu_live_medium_change(tmp_path):
+    """Change the CD-ROM medium on a running VM through QMP.
+
+    The VM boots from disk (an empty disk in this test), so the guest cannot be
+    using the ISO.  This exercises the real tray/medium QMP path without risking
+    a live guest's file system.
+    """
+
+    iso = _find_iso()
+    if iso is None:
+        pytest.skip("No Alpine ISO available; set OPENQVM_TEST_ISO to run the e2e test.")
+    context = AppContext.create(data_dir=tmp_path / "data")
+    if not context.capabilities.backend_available:
+        pytest.skip("QEMU is not installed on this host.")
+
+    spec = create_vm_spec(
+        name="E2E Hotplug",
+        guest_os=GuestOS.LINUX,
+        host=HostResources.detect(),
+        vcpus=1,
+        memory_mib=256,
+        disk_bytes=128 * 1024**2,
+        cdrom_iso=str(iso),
+    )
+    spec.boot_order = [BootDevice.DISK]
+    manager = context.manager
+    vm_id = manager.create_vm(spec).id
+    running = False
+    try:
+        manager.start_vm(vm_id)
+        running = True
+
+        def inserted_medium() -> str | None:
+            runtime = manager.get_runtime(vm_id)
+            client = manager.backend.qmp_client(runtime)
+            try:
+                entry = find_cdrom_device(client.execute("query-block"))
+            finally:
+                client.close()
+            return medium_filename(entry) if entry else None
+
+        assert inserted_medium() is not None
+
+        ejected = manager.eject_iso(vm_id, live=True)
+        assert ejected.cdrom_iso is None
+        assert inserted_medium() is None
+
+        attached = manager.attach_iso(vm_id, str(iso), live=True)
+        assert attached.cdrom_iso == str(iso)
+        assert str(inserted_medium()).lower() == str(iso).lower()
+
+        manager.stop_vm(vm_id, force=True)
+        running = False
         manager.delete_vm(vm_id)
     finally:
         if running:

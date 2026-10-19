@@ -15,8 +15,12 @@ All notable changes to OpenQVM are documented here. The format follows
 - Disk consistency checks with `qemu-img check` in the VM Storage tab, in
   `openqvm-cli check`, and per-disk JSON results. Checks are refused while the VM
   is running.
-- Integration and end-to-end coverage for the event bus, disk checks and
-  event-driven refresh.
+- Live storage operations: the CD-ROM drive is always present so media can be
+  inserted, replaced or ejected while the VM runs, and disks can be grown through
+  QEMU `block_resize`. QEMU's media lock is respected by default; `--force` is
+  available for explicit, documented overrides.
+- Integration and end-to-end coverage for the event bus, disk checks,
+  event-driven refresh and live storage operations.
 
 ## [0.1.0] - 2026-10-19
 

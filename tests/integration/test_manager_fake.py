@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from openqvm.core.errors import ConflictError, InvalidStateError
+from openqvm.core.errors import ConflictError, InvalidStateError, ValidationError
 from openqvm.core.factory import create_vm_spec
 from openqvm.core.models import GuestOS, VMStatus
 from openqvm.core.paths import AppPaths
@@ -53,10 +53,12 @@ class FakeDisks:
 
 class FakeBackend:
     name = "fake"
-    capabilities = BackendCapabilities("fake", True, True, True, False, False)
+    capabilities = BackendCapabilities("fake", True, True, True, True, True)
 
     def __init__(self, store: VmStore) -> None:
         self.store = store
+        self.medium_changes: list[tuple[str | None, bool]] = []
+        self.live_resizes: list[tuple[int, int]] = []
 
     def start(self, spec, runtime):
         runtime.status = VMStatus.RUNNING
@@ -87,6 +89,12 @@ class FakeBackend:
 
     def refresh(self, spec, runtime):
         return runtime
+
+    def change_medium(self, spec, runtime, iso_path, *, force=False):
+        self.medium_changes.append((iso_path, force))
+
+    def resize_disk_live(self, spec, runtime, disk_index, new_size_bytes):
+        self.live_resizes.append((disk_index, new_size_bytes))
 
     def qmp_client(self, runtime, timeout=10.0):
         raise RuntimeError("no QMP in fake backend")
@@ -262,3 +270,58 @@ def test_check_disks_refuses_running_vm(manager):
     with pytest.raises(InvalidStateError, match="stopped"):
         manager.check_disks(spec.id)
     manager.stop_vm(spec.id, force=True)
+
+
+def test_live_resize_uses_backend_and_persists_size(manager):
+    spec = manager.create_vm(_spec())
+    manager.start_vm(spec.id)
+    new_size = spec.disks[0].size_bytes + 1024**3
+    with pytest.raises(InvalidStateError, match="live resize"):
+        manager.resize_disk(spec.id, spec.disks[0].id, new_size)
+    updated = manager.resize_disk(spec.id, spec.disks[0].id, new_size, live=True)
+    assert updated.disks[0].size_bytes == new_size
+    assert manager.backend.live_resizes == [(0, new_size)]
+    reloaded = manager.get_spec(spec.id)
+    assert reloaded.disks[0].size_bytes == new_size
+    manager.stop_vm(spec.id, force=True)
+
+
+def test_live_resize_rejects_shrink(manager):
+    spec = manager.create_vm(_spec())
+    manager.start_vm(spec.id)
+    with pytest.raises(ValidationError) as excinfo:
+        manager.resize_disk(spec.id, spec.disks[0].id, spec.disks[0].size_bytes - 1024**2, live=True)
+    assert any("enlarged" in issue.message for issue in excinfo.value.issues)
+    assert manager.backend.live_resizes == []
+    manager.stop_vm(spec.id, force=True)
+
+
+def test_live_iso_change_uses_backend(manager, tmp_path):
+    iso = tmp_path / "installer.iso"
+    iso.write_bytes(b"x" * 40000)
+    spec = manager.create_vm(_spec())
+    manager.start_vm(spec.id)
+
+    with pytest.raises(InvalidStateError, match="live change"):
+        manager.attach_iso(spec.id, str(iso))
+
+    updated = manager.attach_iso(spec.id, str(iso), live=True)
+    assert updated.cdrom_iso == str(iso)
+    assert manager.backend.medium_changes[-1] == (str(iso), False)
+
+    ejected = manager.eject_iso(spec.id, live=True, force=True)
+    assert ejected.cdrom_iso is None
+    assert manager.backend.medium_changes[-1] == (None, True)
+    manager.stop_vm(spec.id, force=True)
+
+
+def test_offline_iso_change_still_works(manager, tmp_path):
+    iso = tmp_path / "installer.iso"
+    iso.write_bytes(b"x" * 40000)
+    spec = manager.create_vm(_spec())
+    updated = manager.attach_iso(spec.id, str(iso), live=True)
+    assert updated.cdrom_iso == str(iso)
+    assert manager.backend.medium_changes == []
+    ejected = manager.eject_iso(spec.id, live=True)
+    assert ejected.cdrom_iso is None
+    assert manager.backend.medium_changes == []

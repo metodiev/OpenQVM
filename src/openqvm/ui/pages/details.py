@@ -571,6 +571,7 @@ class VmDetailsPage(QWidget):
 
     def _update_editable_state(self) -> None:
         active = self._busy
+        capabilities = self.context.manager.backend.capabilities
         for widget in (self.cpu_spin, self.memory_spin, self.firmware_combo, self.machine_combo,
                        self.accelerator_combo, self.graphics_combo, self.os_combo):
             widget.setEnabled(not active)
@@ -582,17 +583,16 @@ class VmDetailsPage(QWidget):
             )
         else:
             self.overview_banner.clear()
-        for widget in (
-            self.add_disk_button,
-            self.resize_disk_button,
-            self.check_disks_button,
-            self.remove_disk_button,
-            self.attach_iso_button,
-            self.eject_iso_button,
-            self.add_nic_button,
-            self.edit_nic_button,
-            self.remove_nic_button,
-        ):
+        self.add_disk_button.setEnabled(not active)
+        self.remove_disk_button.setEnabled(not active)
+        self.check_disks_button.setEnabled(not active)
+        self.resize_disk_button.setEnabled(not active or capabilities.supports_online_disk_resize)
+        self.attach_iso_button.setEnabled(not active or capabilities.supports_live_iso_change)
+        self.eject_iso_button.setEnabled(
+            not active
+            or (capabilities.supports_live_iso_change and bool(self.spec and self.spec.cdrom_iso))
+        )
+        for widget in (self.add_nic_button, self.edit_nic_button, self.remove_nic_button):
             widget.setEnabled(not active)
 
     def _populate_storage(self) -> None:
@@ -620,9 +620,26 @@ class VmDetailsPage(QWidget):
         self.boot_label.setText(
             "Boot order: " + " → ".join(device.value for device in self.spec.boot_order)
         )
-        self.storage_banner.clear() if not active else self.storage_banner.show_message(
-            "Storage changes require the virtual machine to be stopped.", severity="info"
-        )
+        if active:
+            capabilities = self.context.manager.backend.capabilities
+            live_actions: list[str] = []
+            if capabilities.supports_live_iso_change:
+                live_actions.append("change the installation image")
+            if capabilities.supports_online_disk_resize:
+                live_actions.append("grow a disk")
+            if live_actions:
+                self.storage_banner.show_message(
+                    "The VM is running. You can still "
+                    + " and ".join(live_actions)
+                    + ". The guest may need to rescan the block device before it sees a new disk size.",
+                    severity="info",
+                )
+            else:
+                self.storage_banner.show_message(
+                    "Storage changes require the virtual machine to be stopped.", severity="info"
+                )
+        else:
+            self.storage_banner.clear()
 
     def _populate_network(self) -> None:
         if self.spec is None:
@@ -836,9 +853,23 @@ class VmDetailsPage(QWidget):
         )
         if not ok:
             return
+        live = self._busy
+        if live and not confirm(
+            self,
+            "Live disk resize",
+            f"Grow the disk to {size} GiB while the VM is running?",
+            informative=(
+                "QEMU will change the disk size immediately. The guest may need to rescan the block "
+                "device and grow its file system before it can use the additional space."
+            ),
+            confirm_text="Grow disk",
+        ):
+            return
         self._run(
             "Resizing disk",
-            lambda: self.context.manager.resize_disk(self.vm_id, disk_id, size * 1024**3),
+            lambda: self.context.manager.resize_disk(
+                self.vm_id, disk_id, size * 1024**3, live=live
+            ),
         )
 
     def _check_disks(self) -> None:
@@ -910,17 +941,43 @@ class VmDetailsPage(QWidget):
         )
         if not path:
             return
+        live = self._busy
+        if live and not confirm(
+            self,
+            "Live image change",
+            "Change the installation image while the VM is running?",
+            informative=(
+                "QEMU refuses the change while the guest is using the current medium. If that happens, "
+                "stop the VM or use 'openqvm-cli attach-iso --live --force', which can disrupt the guest."
+            ),
+            confirm_text="Change image",
+        ):
+            return
         self._run(
             "Attaching ISO",
-            lambda: self.context.manager.attach_iso(self.vm_id, path),
+            lambda: self.context.manager.attach_iso(self.vm_id, path, live=live),
         )
 
     def _eject_iso(self) -> None:
         if not self.vm_id or not self.spec or not self.spec.cdrom_iso:
             return
-        if not confirm(self, "Eject ISO", "Detach the installation image from this VM?", confirm_text="Eject"):
+        live = self._busy
+        if not confirm(
+            self,
+            "Eject ISO",
+            "Detach the installation image from this VM?",
+            informative=(
+                "The guest may still be using the media; QEMU then refuses the eject unless force is used."
+                if live
+                else ""
+            ),
+            confirm_text="Eject",
+        ):
             return
-        self._run("Ejecting ISO", lambda: self.context.manager.eject_iso(self.vm_id))
+        self._run(
+            "Ejecting ISO",
+            lambda: self.context.manager.eject_iso(self.vm_id, live=live),
+        )
 
     def _selected_nic(self) -> NicSpec | None:
         rows = self.nic_table.selectionModel().selectedRows()

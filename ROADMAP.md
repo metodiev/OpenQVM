@@ -50,10 +50,11 @@ untested platforms are not claimed as verified.
 - [x] NAT networking with port forwarding
 - [x] Shared folders on Linux (virtio-9p; guest drivers required)
 - [x] Host and per-VM metrics, operation history, `doctor` diagnostics
+- [x] Live ISO insert/replace/eject through QMP (media lock respected; `--force` opt-in)
+- [x] Live disk growth through QMP `block_resize`
 - [ ] Bridged networking (requires privileged helper/bridge configuration)
 - [ ] Host-only networking
 - [ ] TPM 2.0 (swtpm integration)
-- [ ] Live ISO change and live disk resize
 - [ ] Clipboard integration
 - [ ] Scheduled/automatic backups
 - [ ] Shared folders on Windows/macOS
