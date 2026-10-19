@@ -135,6 +135,9 @@ class AppPaths:
     def vm_firmware_dir(self, vm_id: str) -> Path:
         return self.vm_dir(vm_id) / "firmware"
 
+    def vm_tpm_dir(self, vm_id: str) -> Path:
+        return self.vm_dir(vm_id) / "tpm"
+
 
 def safe_component(value: str, *, what: str = "name") -> str:
     """Validate a single path component (no separators, no traversal)."""

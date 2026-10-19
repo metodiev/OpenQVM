@@ -226,12 +226,12 @@ def validate_vm_spec(
         elif not path.is_dir():
             issues.append(ValidationIssue(f"{prefix}.path", "The shared folder does not exist or is not a directory."))
 
-    if spec.guest_os is GuestOS.WINDOWS_11:
+    if spec.guest_os is GuestOS.WINDOWS_11 and not spec.tpm:
         issues.append(
             ValidationIssue(
                 "guest_os",
-                "Windows 11 requires UEFI and a TPM 2.0 device. OpenQVM does not yet provide a TPM, "
-                "so the Windows 11 installer may refuse to continue.",
+                "Windows 11 expects UEFI and a TPM 2.0 device. Enable the TPM device (it requires swtpm "
+                "and a QEMU build with TPM support) or the Windows 11 installer may refuse to continue.",
                 severity="warning",
             )
         )

@@ -481,6 +481,7 @@ class VMSpec:
     nics: list[NicSpec] = field(default_factory=list)
     display: DisplaySpec = field(default_factory=DisplaySpec)
     shared_folders: list[SharedFolderSpec] = field(default_factory=list)
+    tpm: bool = False
     created_at: str = field(default_factory=utc_now_iso)
     updated_at: str = field(default_factory=utc_now_iso)
     revision: int = 1
@@ -536,6 +537,7 @@ class VMSpec:
             "nics": [nic.to_dict() for nic in self.nics],
             "display": self.display.to_dict(),
             "shared_folders": [folder.to_dict() for folder in self.shared_folders],
+            "tpm": self.tpm,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "revision": self.revision,
@@ -563,6 +565,7 @@ class VMSpec:
                 "nics",
                 "display",
                 "shared_folders",
+                "tpm",
                 "created_at",
                 "updated_at",
                 "revision",
@@ -599,6 +602,7 @@ class VMSpec:
             nics=[NicSpec.from_dict(item) for item in nics_raw],
             display=DisplaySpec.from_dict(mapping.get("display", {})),
             shared_folders=[SharedFolderSpec.from_dict(item) for item in folders_raw],
+            tpm=bool(mapping.get("tpm", False)),
             created_at=parse_timestamp(_str(mapping, "created_at", context="vm"), field_name="vm.created_at"),
             updated_at=parse_timestamp(_str(mapping, "updated_at", context="vm"), field_name="vm.updated_at"),
             revision=_int(mapping, "revision", context="vm", minimum=1),
@@ -649,6 +653,7 @@ class VMSpec:
             nics=nics,
             display=self.display,
             shared_folders=list(self.shared_folders),
+            tpm=self.tpm,
             created_at=now,
             updated_at=now,
             revision=1,

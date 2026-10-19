@@ -30,6 +30,13 @@ All notable changes to OpenQVM are documented here. The format follows
   packages recorded in `backups.json`; the VM details page lists them with a
   "Back up now" action, and `openqvm-cli backup`/`backups` expose the same
   functionality, including `--due` for cron-style scripting.
+- TPM 2.0: VMs can request an emulated TPM 2.0 device. OpenQVM probes the QEMU
+  binary for `-tpmdev` support, supervises an `swtpm` process (loopback TCP,
+  readiness wait, crash cleanup) and passes `-chardev`/`-tpmdev emulator`/
+  `-device tpm-tis` to QEMU. Capability detection no longer assumes that an
+  installed swtpm is enough: Windows QEMU builds have no TPM support and are
+  reported as unavailable. The wizard and VM details expose the switch, and
+  `openqvm-cli create --tpm` sets it.
 - Hardening: property-based tests (Hypothesis) assert that arbitrary package
   bytes, archive layouts, manifests, settings and VM configurations are rejected
   with structured errors and leave no partial state; a new CI job runs

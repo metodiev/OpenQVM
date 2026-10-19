@@ -192,6 +192,23 @@ window.grab().save("dashboard.png")
 - `AsyncRunner.submit` returns the job's token and `cancel_active()` cancels every
   running job; callbacks receive the token as their only argument.
 
+## TPM 2.0
+
+- A VM can request a TPM with `spec.tpm`. It is refused during validation unless
+  `PlatformCapabilities.tpm_supported` is true; that flag requires a QEMU build
+  that accepts `-tpmdev` (probed with `-tpmdev help` and cached) and an installed
+  `swtpm`. Never infer support from the presence of swtpm alone.
+- `QemuBackend` starts `swtpm` (`socket --tpm2 --tpmstate dir=... --server
+  type=tcp,port=...,bindaddr=127.0.0.1 --flags not-need-init,startup-clear`),
+  waits until the port accepts connections, then passes
+  `-chardev socket,id=chrtpm,... -tpmdev emulator,id=tpm0,chardev=chrtpm
+  -device tpm-tis,tpmdev=tpm0` to QEMU.
+- `TpmEmulator` records PID and creation time in `<vm>/tpm/session.json`; a later
+  start, or `_mark_stopped`, stops an emulator left behind by a crash.
+- TPM state is not exported or backed up, and `export_vm` warns about it.
+  `tests/unit/test_tpm.py` exercises the lifecycle with a stub that listens on the
+  requested port, because this Windows QEMU build has no TPM support.
+
 ## Snapshot semantics
 
 - Offline (`qemu-img snapshot`): disk-only, crash-consistent at best.

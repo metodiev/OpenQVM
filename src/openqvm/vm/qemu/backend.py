@@ -36,6 +36,7 @@ from openqvm.vm.qemu.process import (
     wait_for_exit,
 )
 from openqvm.vm.qemu.qmp import QmpClient, QmpCommandError
+from openqvm.vm.qemu.tpm import TpmEmulator
 
 log = get_logger("qemu.backend")
 
@@ -55,6 +56,7 @@ class QemuBackend:
         self.paths = paths
         self.store = store
         self.platform = platform
+        self._tpm: dict[str, TpmEmulator] = {}
 
     # -- helpers --------------------------------------------------------------
 
@@ -103,7 +105,7 @@ class QemuBackend:
                     hint="Restore the disk from a backup or recreate the virtual machine.",
                 )
 
-    def _plan(self, spec: VMSpec):  # type: ignore[no-untyped-def]
+    def _plan(self, spec: VMSpec, *, tpm_port: int | None = None):  # type: ignore[no-untyped-def]
         qmp_port = allocate_tcp_port()
         if spec.display.vnc_enabled:
             display, vnc_port = allocate_vnc_display()
@@ -118,7 +120,31 @@ class QemuBackend:
             vnc_display=display,
             vnc_port=vnc_port,
             firmware_vars=firmware_vars,
+            tpm_port=tpm_port,
         )
+
+    def _start_tpm(self, spec: VMSpec) -> TpmEmulator:
+        if not self.platform.tpm_supported or not self.platform.tpm_binary:
+            raise UnsupportedFeatureError(
+                "TPM 2.0 is not available on this host.",
+                hint=self.platform.tpm_detail or "Install swtpm and use a QEMU build with TPM support.",
+            )
+        state_dir = self.paths.vm_tpm_dir(spec.id)
+        emulator = TpmEmulator([self.platform.tpm_binary], state_dir)
+        emulator.start()
+        self._tpm[spec.id] = emulator
+        return emulator
+
+    def _stop_tpm(self, vm_id: str) -> None:
+        emulator = self._tpm.pop(vm_id, None)
+        try:
+            if emulator is not None:
+                emulator.stop()
+            else:
+                # Recover from an OpenQVM crash: the session file still names the emulator.
+                TpmEmulator.stop_leftover(self.paths.vm_tpm_dir(vm_id))
+        except Exception:  # pragma: no cover - defensive cleanup
+            log.exception("Could not stop the TPM emulator for %s", vm_id)
 
     def qmp_client(self, runtime: VMRuntime, *, timeout: float = 10.0) -> QmpClient:
         if not runtime.qmp_port:
@@ -263,7 +289,14 @@ class QemuBackend:
         if process_matches(runtime.pid, runtime.process_create_time):
             raise ConflictError("The virtual machine is already running.")
 
-        plan = self._plan(spec)
+        emulator: TpmEmulator | None = None
+        if spec.tpm:
+            emulator = self._start_tpm(spec)
+        try:
+            plan = self._plan(spec, tpm_port=emulator.session.port if emulator and emulator.session else None)
+        except Exception:
+            self._stop_tpm(spec.id)
+            raise
         serial_log = plan.serial_log
         serial_log.parent.mkdir(parents=True, exist_ok=True)
         serial_log.write_bytes(b"")
@@ -284,6 +317,7 @@ class QemuBackend:
         try:
             info: ProcessInfo = launch_qemu(plan.argv, log_path=plan.qemu_log, cwd=self.paths.vm_dir(spec.id))
         except Exception as exc:
+            self._stop_tpm(spec.id)
             runtime.status = VMStatus.ERROR
             runtime.last_error = str(exc)
             error_code = getattr(exc, "code", None)
@@ -310,6 +344,7 @@ class QemuBackend:
             return runtime
         except Exception as exc:
             terminate_process(info.pid, info.create_time, timeout=5)
+            self._stop_tpm(spec.id)
             log_tail = read_log_tail(plan.qemu_log)
             runtime.status = VMStatus.ERROR
             runtime.last_error = str(exc)
@@ -433,6 +468,7 @@ class QemuBackend:
             pass
 
     def _mark_stopped(self, runtime: VMRuntime) -> VMRuntime:
+        self._stop_tpm(runtime.vm_id)
         runtime.status = VMStatus.STOPPED
         runtime.pid = None
         runtime.process_create_time = None

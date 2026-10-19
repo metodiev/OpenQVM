@@ -437,6 +437,7 @@ class VmManager:
                     or existing.cdrom_iso != spec.cdrom_iso
                     or existing.shared_folders != spec.shared_folders
                     or existing.display != spec.display
+                    or existing.tpm != spec.tpm
                 )
                 if hardware_changed:
                     raise InvalidStateError(

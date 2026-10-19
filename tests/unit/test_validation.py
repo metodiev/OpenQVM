@@ -121,3 +121,42 @@ def test_bridged_requires_bridge():
     object.__setattr__(spec.nics[0], "bridge", None)
     issues = validate_vm_spec(spec, host=HOST)
     assert any("bridge" in issue.field for issue in _errors(issues))
+
+def test_tpm_requires_a_capable_host(tmp_path):
+    from openqvm.platform.capabilities import PlatformCapabilities
+    from openqvm.platform.compatibility import check_compatibility
+    from openqvm.platform.qemu_discovery import QemuInstall
+
+    qemu = QemuInstall(
+        system_path=tmp_path / "qemu-system-x86_64.exe",
+        image_path=tmp_path / "qemu-img.exe",
+        version="11.0.0",
+        accelerators=("tcg",),
+        share_dir=None,
+        source="test",
+    )
+    spec = create_vm_spec(name="TPM VM", guest_os=GuestOS.WINDOWS_10, host=HOST)
+    spec.tpm = True
+    unsupported = PlatformCapabilities(
+        os_family="windows",
+        architecture="AMD64",
+        qemu=qemu,
+        accelerators=[],
+        default_accelerator="tcg",
+        tpm_supported=False,
+        tpm_detail="This QEMU build has no TPM support (the -tpmdev option is unavailable).",
+    )
+    issues = check_compatibility(spec, unsupported)
+    assert [issue.field for issue in issues if issue.is_error] == ["tpm"]
+    assert "no TPM support" in issues[0].message
+
+    supported = PlatformCapabilities(
+        os_family="linux",
+        architecture="x86_64",
+        qemu=qemu,
+        accelerators=[],
+        default_accelerator="tcg",
+        tpm_supported=True,
+        tpm_detail="swtpm found.",
+    )
+    assert not [issue for issue in check_compatibility(spec, supported) if issue.is_error]

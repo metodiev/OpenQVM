@@ -157,6 +157,13 @@ keyboard mapping and therefore works without a guest agent. The RTC uses
   scheduler lives in the GUI (a timer plus one check after startup) and in
   `openqvm-cli backup --due`; both call the same manager method, which publishes
   `backups.changed` so open pages refresh without polling.
+- TPM 2.0 is an external process: `VmManager` refuses the device unless
+  `PlatformCapabilities.tpm_supported` is true, which requires both a QEMU build
+  that accepts `-tpmdev` (probed once and cached) and an installed `swtpm`.
+  `QemuBackend` starts `swtpm` on a random loopback port, waits until it listens,
+  passes the port to the launch plan, and stops the emulator when the VM stops or
+  when a leftover session file is found (crash recovery). TPM state stays in
+  `<vm>/tpm` and is not part of exports or backups.
 
 ### 3.7 Networking
 

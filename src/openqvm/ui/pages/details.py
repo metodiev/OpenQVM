@@ -199,6 +199,12 @@ class VmDetailsPage(QWidget):
         self.graphics_combo.addItem("Standard VGA", GraphicsAdapter.STD.value)
         self.graphics_combo.addItem("VirtIO GPU", GraphicsAdapter.VIRTIO.value)
         form.addRow("Display adapter", self.graphics_combo)
+        self.tpm_check = QCheckBox("TPM 2.0 device")
+        self.tpm_check.setToolTip(
+            self.context.capabilities.tpm_detail or "TPM 2.0 requires swtpm."
+        )
+        self.tpm_check.setEnabled(self.context.capabilities.tpm_supported)
+        form.addRow("TPM", self.tpm_check)
         self.save_button = QPushButton("Save changes")
         self.save_button.setProperty("variant", "primary")
         self.save_button.clicked.connect(self._save_overview)
@@ -597,6 +603,7 @@ class VmDetailsPage(QWidget):
         self.accelerator_combo.setCurrentIndex(max(0, index))
         index = self.graphics_combo.findData(spec.display.adapter.value)
         self.graphics_combo.setCurrentIndex(max(0, index))
+        self.tpm_check.setChecked(spec.tpm)
         self._populate_runtime(summary)
         self._update_editable_state()
 
@@ -620,6 +627,9 @@ class VmDetailsPage(QWidget):
         for widget in (self.cpu_spin, self.memory_spin, self.firmware_combo, self.machine_combo,
                        self.accelerator_combo, self.graphics_combo, self.os_combo):
             widget.setEnabled(not active)
+        self.tpm_check.setEnabled(
+            not active and self.context.capabilities.tpm_supported
+        )
         self.save_button.setEnabled(True)
         if active:
             self.overview_banner.show_message(
@@ -905,6 +915,7 @@ class VmDetailsPage(QWidget):
             spec.machine = self.machine_combo.currentData()
             spec.guest_os = GuestOS(self.os_combo.currentData())
             spec.display = DisplaySpec(adapter=GraphicsAdapter(self.graphics_combo.currentData()))
+            spec.tpm = self.tpm_check.isChecked()
         spec.accelerator = self.accelerator_combo.currentData() or None
         spec.name = self.name_edit.text().strip()
         spec.description = self.description_edit.text().strip()

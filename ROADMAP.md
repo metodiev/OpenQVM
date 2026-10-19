@@ -3,6 +3,23 @@
 This roadmap separates work that is **implemented and verified** from work that is
 planned. See the README for the honest platform-validation status.
 
+## How items are validated
+
+A checked item was verified at one of these levels; nothing beyond the level it
+reached is claimed:
+
+1. **Unit/integration tests** on the development host (Windows 11, Python 3.13).
+2. **Real-QEMU end-to-end tests** on the development host (WHPX and TCG): boot,
+   console input, snapshots, export/import, clone, live storage changes.
+3. **Repeated on Linux/KVM or macOS/HVF** — not yet done for any item, so no
+   item claims it.
+
+Features that depend on host infrastructure are gated on detected support and
+stop with an actionable error instead of guessing: bridged networking needs
+`qemu-bridge-helper` plus a host bridge, and TPM 2.0 needs a QEMU build with
+`-tpmdev` plus `swtpm`. This development host's QEMU build has no TPM support, so
+the TPM path is covered by level 1 only.
+
 ## Phase 1 — Foundation ✅
 
 - [x] Repository structure, packaging (`pyproject.toml`, entry points)
@@ -58,9 +75,12 @@ untested platforms are not claimed as verified.
 - [x] Operation lifecycle events (`operation.started`, `operation.progress`,
       `operation.finished`) with byte-accurate progress for exports and imports
 - [x] Scheduled automatic backups of stopped VMs with retention and a backup index
-- [ ] Bridged networking (requires privileged helper/bridge configuration)
+- [x] Bridged networking for Linux (QEMU bridge netdev, gated on
+      qemu-bridge-helper and host support; verified by unit tests, not yet on a
+      real bridge)
 - [ ] Host-only networking
-- [ ] TPM 2.0 (swtpm integration)
+- [x] TPM 2.0 with swtpm (probing, supervision and launch arguments unit-tested;
+      a guest-level handshake still needs a host whose QEMU build has TPM support)
 - [ ] Clipboard integration
 - [x] Scheduled/automatic backups
 - [ ] Shared folders on Windows/macOS

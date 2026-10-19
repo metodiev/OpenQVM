@@ -29,8 +29,10 @@ class ProcessInfo:
     create_time: float
 
 
-def launch_qemu(argv: list[str], *, log_path: Path, cwd: Path | None = None) -> ProcessInfo:
-    """Start QEMU detached and return its verified process identity."""
+def launch_qemu(
+    argv: list[str], *, log_path: Path, cwd: Path | None = None, label: str = "QEMU"
+) -> ProcessInfo:
+    """Start a background process (QEMU or a helper) and return its verified identity."""
 
     log_path = Path(log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -51,7 +53,7 @@ def launch_qemu(argv: list[str], *, log_path: Path, cwd: Path | None = None) -> 
         )
     except OSError as exc:
         raise BackendError(
-            "QEMU could not be started.",
+            f"{label} could not be started.",
             hint="Verify the QEMU installation and that the accelerator is available.",
             cause=exc,
         ) from exc
@@ -60,8 +62,8 @@ def launch_qemu(argv: list[str], *, log_path: Path, cwd: Path | None = None) -> 
     try:
         info = ProcessInfo(pid=process.pid, create_time=psutil.Process(process.pid).create_time())
     except psutil.Error as exc:
-        raise BackendError("QEMU started but its process could not be inspected.", cause=exc) from exc
-    log.info("Started QEMU pid=%s create_time=%.3f", info.pid, info.create_time)
+        raise BackendError(f"{label} started but its process could not be inspected.", cause=exc) from exc
+    log.info("Started %s pid=%s create_time=%.3f", label, info.pid, info.create_time)
     return info
 
 

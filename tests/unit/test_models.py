@@ -118,3 +118,17 @@ def test_raw_disk_format_roundtrip(host):
     )
     restored = VMSpec.from_dict(copy.deepcopy(spec.to_dict()))
     assert restored.disks[0].format is DiskFormat.RAW
+
+def test_vm_spec_carries_the_tpm_flag():
+    from openqvm.core.factory import create_vm_spec
+    from openqvm.core.models import GuestOS, VMSpec
+    from openqvm.core.validation import HostResources
+
+    spec = create_vm_spec(
+        name="TPM VM", guest_os=GuestOS.LINUX, host=HostResources(cpu_count=4, memory_total_mib=8192)
+    )
+    assert VMSpec.from_dict(spec.to_dict()).tpm is False
+    spec.tpm = True
+    assert VMSpec.from_dict(spec.to_dict()).tpm is True
+    clone = spec.clone_with_identity("TPM clone")
+    assert clone.tpm is True

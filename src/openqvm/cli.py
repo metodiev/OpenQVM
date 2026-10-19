@@ -116,6 +116,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="NAT port forward (repeatable).",
     )
     create.add_argument("--description", default="")
+    create.add_argument("--tpm", action="store_true", help="Add a TPM 2.0 device (requires swtpm and QEMU TPM support).")
     create.add_argument("--accelerator", help="Override the accelerator (kvm, whpx, hvf, tcg).")
     create.add_argument("--start", action="store_true", help="Start the VM after creating it.")
     create.set_defaults(func=_cmd_create)
@@ -442,6 +443,8 @@ def _cmd_create(args: argparse.Namespace) -> int:
         description=args.description,
         accelerator=args.accelerator,
     )
+    if args.tpm:
+        spec.tpm = True
     progress = _ProgressLine(context.manager, enabled=not args.json)
     try:
         created = context.manager.create_vm(spec)

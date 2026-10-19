@@ -283,3 +283,28 @@ def test_settings_page_persists_the_backup_policy(tmp_path, qapp):
         window.deleteLater()
         qapp.processEvents()
         context.close()
+
+@pytest.mark.gui
+def test_tpm_controls_follow_the_detected_capability(tmp_path, qapp):
+    from openqvm.ui.main_window import MainWindow
+    from openqvm.ui.pages.wizard import CreateVmWizard
+
+    context = AppContext.create(data_dir=tmp_path / "data")
+    window = MainWindow(context)
+    try:
+        supported = context.capabilities.tpm_supported
+        wizard = CreateVmWizard(context, window)
+        try:
+            resources = wizard.page(1)
+            assert resources.tpm_check.isEnabled() is supported
+            assert resources.tpm_check.isChecked() is False
+            assert context.capabilities.tpm_detail
+        finally:
+            wizard.close()
+            wizard.deleteLater()
+        assert window.details.tpm_check.isEnabled() is supported
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+        context.close()

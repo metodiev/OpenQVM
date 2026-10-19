@@ -60,6 +60,14 @@ def check_compatibility(spec: VMSpec, capabilities: PlatformCapabilities) -> lis
             )
         )
 
+    if spec.tpm and not capabilities.tpm_supported:
+        issues.append(
+            ValidationIssue(
+                "tpm",
+                f"TPM 2.0 is not available: {capabilities.tpm_detail or 'swtpm was not detected.'}",
+            )
+        )
+
     if not capabilities.default_accelerator:
         issues.append(
             ValidationIssue(

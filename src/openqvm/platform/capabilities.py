@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import platform as host_platform
+import shutil
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -14,6 +16,40 @@ from openqvm.platform import linux, macos, windows
 from openqvm.platform.qemu_discovery import QemuInstall, discover_qemu
 
 log = get_logger("platform.capabilities")
+
+_NO_WINDOW = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
+_tpm_probe_cache: dict[str, bool] = {}
+
+
+def qemu_tpm_supported(system_path: Path | None, *, timeout: float = 15.0) -> bool:
+    """Ask the QEMU binary whether it was built with TPM support.
+
+    Windows builds of QEMU usually omit ``-tpmdev``; guessing from installed
+    helper tools would advertise a device QEMU cannot create.
+    """
+
+    if system_path is None:
+        return False
+    key = str(system_path)
+    if key in _tpm_probe_cache:
+        return _tpm_probe_cache[key]
+    supported = False
+    try:
+        completed = subprocess.run(
+            [str(system_path), "-tpmdev", "help"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=timeout,
+            creationflags=_NO_WINDOW,
+            check=False,
+        )
+        supported = completed.returncode == 0
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log.warning("Could not probe %s for TPM support: %s", system_path, exc)
+    _tpm_probe_cache[key] = supported
+    return supported
 
 
 @dataclass(frozen=True)
@@ -45,6 +81,7 @@ class PlatformCapabilities:
     shared_folders_detail: str = ""
     tpm_supported: bool = False
     tpm_detail: str = ""
+    tpm_binary: str = ""
     diagnostics: list[str] = field(default_factory=list)
     detected_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat(timespec="seconds"))
 
@@ -94,6 +131,7 @@ class PlatformCapabilities:
             "shared_folders_detail": self.shared_folders_detail,
             "tpm_supported": self.tpm_supported,
             "tpm_detail": self.tpm_detail,
+            "tpm_binary": self.tpm_binary,
             "diagnostics": list(self.diagnostics),
             "detected_at": self.detected_at,
         }
@@ -231,6 +269,18 @@ def detect_capabilities(*, qemu_dir: str | Path | None = None) -> PlatformCapabi
     default = _preferred_accelerator(accelerators) if qemu else None
     uefi = _find_uefi(qemu)
 
+    swtpm = shutil.which("swtpm") or shutil.which("swtpm.exe")
+    qemu_tpm = qemu_tpm_supported(qemu.system_path if qemu else None)
+    tpm_supported = qemu_tpm and swtpm is not None
+    if qemu is None:
+        tpm_detail = "QEMU was not found."
+    elif not qemu_tpm:
+        tpm_detail = "This QEMU build has no TPM support (the -tpmdev option is unavailable)."
+    elif swtpm is None:
+        tpm_detail = features.tpm_detail or "Install swtpm to enable an emulated TPM 2.0 device."
+    else:
+        tpm_detail = f"swtpm found at {swtpm}."
+
     diagnostics: list[str] = []
     if qemu:
         diagnostics.append(f"QEMU {qemu.version} at {qemu.system_path}")
@@ -239,6 +289,7 @@ def detect_capabilities(*, qemu_dir: str | Path | None = None) -> PlatformCapabi
             diagnostics.append(f"UEFI firmware: {uefi.code_path}")
         else:
             diagnostics.append("UEFI firmware was not found; BIOS boot is available.")
+        diagnostics.append(f"TPM 2.0: {'available' if tpm_supported else 'unavailable'} - {tpm_detail}")
     else:
         diagnostics.append(
             "QEMU was not found. Install QEMU 8+ and ensure qemu-system-x86_64 and qemu-img are on PATH, "
@@ -263,8 +314,9 @@ def detect_capabilities(*, qemu_dir: str | Path | None = None) -> PlatformCapabi
         host_only_detail=features.host_only_detail,
         shared_folders_supported=features.shared_folders_supported,
         shared_folders_detail=features.shared_folders_detail,
-        tpm_supported=features.tpm_supported,
-        tpm_detail=features.tpm_detail,
+        tpm_supported=tpm_supported,
+        tpm_detail=tpm_detail,
+        tpm_binary=str(swtpm) if swtpm else "",
         diagnostics=diagnostics,
     )
     log.info(

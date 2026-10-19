@@ -26,7 +26,7 @@
 | Bridged / host-only networking | ❌ Not implemented (detected and reported, never silently faked) |
 | Shared folders | ✅ Linux hosts (virtio-9p); unavailable on Windows/macOS |
 | UEFI firmware | ✅ When edk2/OVMF is installed |
-| TPM 2.0 | ❌ Not implemented yet; Windows 11 guests warn about this |
+| TPM 2.0 | ⚠️ Implemented with swtpm, but only when the QEMU build supports TPM. The QEMU build used for Windows testing has no TPM support, so it is reported as unavailable there |
 | Real host/VM metrics | ✅ Measured with psutil; unavailable values are labelled |
 | Live UI updates | ✅ Manager events refresh the UI immediately; polling is only a fallback |
 | Operation progress | ✅ Started/progress/finished events drive a determinate status bar and a CLI progress line for create, clone, export, import and disk checks |
@@ -153,7 +153,7 @@ pip-audit --desc                             # dependency vulnerability scan
 
 The end-to-end test needs QEMU and an Alpine ISO. It looks for `OPENQVM_TEST_ISO`, then for `alpine-virt-*.iso` in the OpenQVM ISO folder. It performs a real boot, verifies serial output, captures a VNC framebuffer, pauses/resumes, grows a disk live, snapshots, restores, exports, imports and clones. A second test changes the CD-ROM medium on a running VM through QMP. Set `OPENQVM_TEST_ISO` explicitly in CI or on other systems.
 
-The test suite includes 159 unit/integration tests plus the real-QEMU end-to-end tests. GUI tests run with Qt's offscreen platform. Property-based tests (Hypothesis) assert that arbitrary package bytes, archive layouts, manifests, settings and VM configurations are either accepted or rejected with a structured `OpenQVMError`, and that a rejected import never leaves a VM or staging directory behind.
+The test suite includes 174 unit/integration tests plus the real-QEMU end-to-end tests. GUI tests run with Qt's offscreen platform. Property-based tests (Hypothesis) assert that arbitrary package bytes, archive layouts, manifests, settings and VM configurations are either accepted or rejected with a structured `OpenQVMError`, and that a rejected import never leaves a VM or staging directory behind.
 
 ## Security
 
@@ -179,6 +179,10 @@ Known security-related limitations in this alpha:
 - Backups are taken while the VM is stopped and are plain `.oqv` packages.
   Restoring a backup means importing it, which creates a new VM identity; in-place
   rollback is done with snapshots instead.
+- TPM 2.0 needs both a QEMU build with TPM support and an installed `swtpm`.
+  Windows QEMU builds omit TPM, so the device is reported as unavailable there.
+  TPM state lives in the VM directory and is neither exported nor backed up, so an
+  imported VM starts with a fresh TPM.
 - Online snapshots include guest memory only when QEMU can save it (KVM/TCG typically can; WHPX cannot). The fallback is an explicitly labelled disk-only snapshot that must be restored while the VM is stopped.
 - Cloning does not copy snapshot history. Use export/import if you need a disk with its internal snapshots.
 - Installers, code signing and package repositories are not provided yet.

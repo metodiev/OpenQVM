@@ -114,6 +114,7 @@ class CreateVmWizard(QWizard):
         spec.cpu = CpuSpec(cores=resources.cpu_spin.value())
         spec.display = DisplaySpec(adapter=GraphicsAdapter(resources.graphics_combo.currentData()))
         spec.shared_folders = storage.shared_folders()
+        spec.tpm = resources.tpm_check.isChecked()
         return spec
 
     def validate_spec(self) -> tuple[VMSpec | None, list[ValidationIssue]]:
@@ -311,11 +312,17 @@ class ResourcesPage(_WizardPage):
         self.graphics_combo.addItem("Standard VGA", GraphicsAdapter.STD.value)
         self.graphics_combo.addItem("VirtIO GPU (requires guest drivers)", GraphicsAdapter.VIRTIO.value)
         form.addRow("Display adapter", self.graphics_combo)
+        capabilities = wizard.context.capabilities
+        self.tpm_check = QCheckBox("Add a TPM 2.0 device (required by Windows 11)")
+        self.tpm_check.setEnabled(capabilities.tpm_supported)
+        self.tpm_check.setToolTip(capabilities.tpm_detail or "TPM 2.0 requires swtpm.")
+        form.addRow("TPM", self.tpm_check)
         layout.addLayout(form)
 
         warning = QLabel(
-            "Windows 11 requires UEFI and a TPM 2.0 device. This build does not provide a TPM, so the "
-            "Windows 11 installer may refuse to continue."
+            "Windows 11 requires UEFI and a TPM 2.0 device."
+            if capabilities.tpm_supported
+            else f"Windows 11 requires UEFI and a TPM 2.0 device. {capabilities.tpm_detail}"
         )
         warning.setWordWrap(True)
         warning.setProperty("role", "warning")

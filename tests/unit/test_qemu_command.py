@@ -60,7 +60,7 @@ def capabilities(tmp_path: Path, *, uefi: bool = False, accelerators=("tcg", "wh
     )
 
 
-def make_plan(tmp_path, spec, capabilities_=None):
+def make_plan(tmp_path, spec, capabilities_=None, *, tpm_port=None):
     paths = AppPaths(tmp_path / "data")
     paths.ensure()
     paths.vm_disk_dir(spec.id).mkdir(parents=True, exist_ok=True)
@@ -74,6 +74,7 @@ def make_plan(tmp_path, spec, capabilities_=None):
         vnc_display=10,
         vnc_port=5910,
         firmware_vars=None,
+        tpm_port=tpm_port,
     )
 
 
@@ -235,3 +236,28 @@ def test_rtc_matches_guest_expectations(tmp_path):
     assert argv_value(make_plan(tmp_path, linux).argv, "-rtc") == "base=utc"
     windows = create_vm_spec(name="Windows RTC", guest_os=GuestOS.WINDOWS_10, host=HOST)
     assert argv_value(make_plan(tmp_path, windows).argv, "-rtc") == "base=localtime"
+
+def test_tpm_arguments_are_absent_by_default(tmp_path):
+    spec = create_vm_spec(name="No TPM", guest_os=GuestOS.LINUX, host=HOST)
+    plan = make_plan(tmp_path, spec)
+    assert "-tpmdev" not in plan.argv
+
+
+def test_tpm_requires_a_running_emulator(tmp_path):
+    spec = create_vm_spec(name="TPM VM", guest_os=GuestOS.WINDOWS_10, host=HOST)
+    spec.tpm = True
+    with pytest.raises(BackendUnavailableError, match="TPM emulator"):
+        make_plan(tmp_path, spec)
+
+
+def test_tpm_arguments_use_the_emulator_port(tmp_path):
+    spec = create_vm_spec(name="TPM VM", guest_os=GuestOS.WINDOWS_10, host=HOST)
+    spec.tpm = True
+    plan = make_plan(tmp_path, spec, tpm_port=4321)
+    argv = plan.argv
+    chardevs = [argv[index + 1] for index, value in enumerate(argv) if value == "-chardev"]
+    assert "socket,id=chrtpm,host=127.0.0.1,port=4321" in chardevs
+    assert argv_value(argv, "-tpmdev") == "emulator,id=tpm0,chardev=chrtpm"
+    assert "tpm-tis,tpmdev=tpm0" in argv
+
+

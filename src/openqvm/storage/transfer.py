@@ -254,6 +254,10 @@ class VmTransferService:
             tracker.finish("Package verified")
         if spec.cdrom_iso:
             warnings.append("The attached installation ISO is not included in the package.")
+        if spec.tpm:
+            warnings.append(
+                "The TPM state is not included in the package; an imported VM starts with a fresh TPM."
+            )
         log.info("Exported VM %s to %s (%s bytes)", spec.name, output_path, hash_result.size)
         return ExportResult(path=output_path, size_bytes=hash_result.size, sha256=hash_result.sha256, warnings=warnings)
 

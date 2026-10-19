@@ -143,6 +143,7 @@ def build_launch_plan(
     vnc_display: int | None,
     vnc_port: int | None,
     firmware_vars: Path | None = None,
+    tpm_port: int | None = None,
 ) -> LaunchPlan:
     if capabilities.qemu is None:
         raise BackendUnavailableError(
@@ -206,6 +207,23 @@ def build_launch_plan(
             f"security_model=mapped-xattr,readonly={'on' if folder.readonly else 'off'}"
         )
         argv.extend(["-virtfs", options])
+
+    if spec.tpm:
+        if tpm_port is None:
+            raise BackendUnavailableError(
+                "TPM 2.0 was requested but the TPM emulator is not running.",
+                hint="Start the virtual machine again so OpenQVM can launch swtpm.",
+            )
+        argv.extend(
+            [
+                "-chardev",
+                f"socket,id=chrtpm,host=127.0.0.1,port={tpm_port}",
+                "-tpmdev",
+                "emulator,id=tpm0,chardev=chrtpm",
+                "-device",
+                "tpm-tis,tpmdev=tpm0",
+            ]
+        )
 
     if spec.display.vnc_enabled and vnc_display is not None:
         argv.extend(["-display", f"vnc={VNC_HOST}:{vnc_display}"])
