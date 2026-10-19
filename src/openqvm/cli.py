@@ -768,9 +768,45 @@ def _tail(path: Path, lines: int) -> str:
 
 
 def _cmd_gui(args: argparse.Namespace) -> int:
-    from openqvm.ui.app import run_gui
+    try:
+        from openqvm.ui.app import run_gui
+    except ImportError:
+        # The frozen CLI is built without Qt; the GUI lives in a sibling binary.
+        return _launch_sibling_gui(args)
 
     return run_gui(data_dir=args.data_dir, qemu_dir=args.qemu_dir)
+
+
+def _launch_sibling_gui(args: argparse.Namespace) -> int:
+    """Start the desktop executable that ships next to the frozen CLI."""
+
+    import subprocess
+    from pathlib import Path
+
+    executable = Path(sys.executable)
+    candidate = executable.with_name("OpenQVM.exe" if sys.platform == "win32" else "OpenQVM")
+    if not candidate.is_file():
+        print(
+            "The desktop application is not part of this build. Run the OpenQVM executable, "
+            "or install OpenQVM from source and run 'openqvm'.",
+            file=sys.stderr,
+        )
+        return EXIT_BACKEND
+
+    command = [str(candidate)]
+    if args.data_dir:
+        command.extend(["--data-dir", str(args.data_dir)])
+    if args.qemu_dir:
+        command.extend(["--qemu-dir", str(args.qemu_dir)])
+    try:
+        subprocess.Popen(command, close_fds=True)
+    except OSError as exc:
+        raise OpenQVMError(
+            "The desktop application could not be started.",
+            code=ErrorCode.BACKEND_ERROR,
+            cause=exc,
+        ) from exc
+    return EXIT_OK
 
 
 def main(argv: list[str] | None = None) -> int:

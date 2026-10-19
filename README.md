@@ -166,7 +166,7 @@ pip-audit --desc                             # dependency vulnerability scan
 
 The end-to-end test needs QEMU and an Alpine ISO. It looks for `OPENQVM_TEST_ISO`, then for `alpine-virt-*.iso` in the OpenQVM ISO folder. It performs a real boot, verifies serial output, captures a VNC framebuffer, pauses/resumes, grows a disk live, snapshots, restores, exports, imports and clones. A second test changes the CD-ROM medium on a running VM through QMP. Set `OPENQVM_TEST_ISO` explicitly in CI or on other systems.
 
-The test suite includes 175 unit/integration tests plus the real-QEMU end-to-end tests. GUI tests run with Qt's offscreen platform. Property-based tests (Hypothesis) assert that arbitrary package bytes, archive layouts, manifests, settings and VM configurations are either accepted or rejected with a structured `OpenQVMError`, and that a rejected import never leaves a VM or staging directory behind.
+The test suite includes 178 unit/integration tests plus the real-QEMU end-to-end tests. GUI tests run with Qt's offscreen platform. Property-based tests (Hypothesis) assert that arbitrary package bytes, archive layouts, manifests, settings and VM configurations are either accepted or rejected with a structured `OpenQVMError`, and that a rejected import never leaves a VM or staging directory behind.
 
 ## Security
 
