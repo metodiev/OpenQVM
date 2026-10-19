@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openqvm"
+version = "0.1.0"
+description = "OpenQVM - an open-source desktop virtualization platform"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "OpenQVM contributors" }]
+keywords = ["virtualization", "qemu", "kvm", "hypervisor", "desktop"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Emulators",
+]
+dependencies = [
+    "PySide6>=6.8,<7",
+    "psutil>=5.9,<8",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-timeout>=2.3",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+openqvm = "openqvm.__main__:main"
+openqvm-cli = "openqvm.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/metodiev/OpenQVM"
+Documentation = "https://github.com/metodiev/OpenQVM/tree/main/docs"
+Issues = "https://github.com/metodiev/OpenQVM/issues"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+openqvm = ["resources/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+timeout = 120
+markers = [
+    "e2e: requires a real QEMU installation (and optionally an ISO)",
+    "gui: exercises Qt widgets with the offscreen platform",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501"]

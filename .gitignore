@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+.Python
+
+# Packaging / build
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Test artifacts
+*.oqv
+test-data/
+.openqvm-test/
+
+# Local VM data (never commit)
+data/
+vms/
+*.qcow2
+*.raw
+*.iso
+*.img
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# PyInstaller
+*.spec.bak
