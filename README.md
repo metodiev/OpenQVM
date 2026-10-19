@@ -14,6 +14,7 @@
 | Persistent VM configuration | ✅ Atomic JSON store with backup recovery |
 | Real guest display in the app | ✅ Embedded VNC client (RFB, loopback) |
 | Serial console and QEMU log | ✅ Streamed into the console window |
+| Console input | ✅ Absolute USB pointer, Ctrl+Alt+Del action, type-text (US layout) |
 | Virtual disks (qcow2/raw, VirtIO/IDE) | ✅ Create, add, detach, grow offline or live |
 | Disk consistency check | ✅ `qemu-img check` from the UI and `openqvm-cli check` |
 | Installation ISO attach/eject | ✅ Offline and live through QEMU medium change |
@@ -166,6 +167,7 @@ Known security-related limitations in this alpha:
 - Bridged and host-only networking are not implemented. The UI explains why instead of pretending they work.
 - Shared folders use virtio-9p and are only enabled on Linux hosts.
 - Live ISO changes and live disk growth use QEMU's medium and block-resize commands. The guest may keep using the old medium (QEMU then refuses without force) and may need to rescan a grown disk before it sees the new size. Forcing a medium change can disrupt a guest that has the media mounted.
+- Console "type text" assumes a US keyboard layout; characters outside its mapping are skipped and reported. It types key events and therefore works without a guest agent.
 - Clipboard integration and USB passthrough are not implemented.
 - Long-running operations have timeouts and force-stop recovery, but they cannot be cancelled midway from the UI yet.
 - Online snapshots include guest memory only when QEMU can save it (KVM/TCG typically can; WHPX cannot). The fallback is an explicitly labelled disk-only snapshot that must be restored while the VM is stopped.

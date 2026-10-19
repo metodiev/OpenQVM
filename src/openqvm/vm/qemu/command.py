@@ -87,6 +87,18 @@ def _disk_arguments(spec: VMSpec, paths: AppPaths) -> list[str]:
     return arguments
 
 
+def _input_arguments(spec: VMSpec) -> list[str]:
+    """Attach an absolute pointing device so VNC mouse input does not drift.
+
+    q35 does not create a USB bus implicitly, so an xHCI controller is added.
+    The legacy ``pc`` machine only needs ``-usb`` to enable its UHCI controller.
+    """
+
+    if spec.machine == "q35":
+        return ["-device", "qemu-xhci", "-device", "usb-tablet"]
+    return ["-usb", "-device", "usb-tablet"]
+
+
 def _cdrom_arguments(spec: VMSpec) -> list[str]:
     """Always provide an IDE CD-ROM so media can be changed while running.
 
@@ -166,8 +178,9 @@ def build_launch_plan(
         f"cpus={spec.cpu.vcpus},sockets={spec.cpu.sockets},cores={spec.cpu.cores},threads={spec.cpu.threads}",
         "-uuid",
         spec.id,
+        # Windows guests keep the RTC in local time by default; Linux guests expect UTC.
         "-rtc",
-        "base=utc",
+        f"base={'localtime' if spec.guest_os.is_windows else 'utc'}",
         "-boot",
         f"order={_boot_order(spec)},menu=off",
         "-no-user-config",
@@ -199,6 +212,8 @@ def build_launch_plan(
         argv.extend(["-vga", "std" if spec.display.adapter is GraphicsAdapter.STD else "virtio"])
     else:
         argv.extend(["-display", "none"])
+
+    argv.extend(_input_arguments(spec))
 
     argv.extend(
         [

@@ -93,6 +93,25 @@ def test_keysyms():
     assert keysym_for_char("😀") is None
 
 
+def test_text_typing_uses_us_layout():
+    from openqvm.vm.rfb import keysym_for_text_char
+
+    assert keysym_for_text_char("a") == (ord("a"), False)
+    assert keysym_for_text_char("A") == (ord("A"), False)
+    assert keysym_for_text_char("7") == (ord("7"), False)
+    assert keysym_for_text_char("!") == (ord("1"), True)
+    assert keysym_for_text_char("~") == (ord("`"), True)
+    assert keysym_for_text_char("_") == (ord("-"), True)
+    assert keysym_for_text_char("{") == (ord("["), True)
+    assert keysym_for_text_char("|") == (ord("\\"), True)
+    assert keysym_for_text_char("=") == (ord("="), False)
+    assert keysym_for_text_char("\n") == (0xFF0D, False)
+    assert keysym_for_text_char("\t") == (0xFF09, False)
+    assert keysym_for_text_char("é") == (0xE9, False)
+    assert keysym_for_text_char("😀") is None
+    assert keysym_for_text_char("ab") is None
+
+
 def test_write_png(tmp_path):
     from openqvm.vm.rfb import FrameBuffer
 

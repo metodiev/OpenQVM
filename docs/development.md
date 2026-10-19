@@ -56,15 +56,21 @@ ruff check src tests --select F,E9
 ### What the e2e test verifies
 
 1. A VM is created with a real qcow2 disk.
-2. QEMU starts with the detected accelerator.
+2. QEMU starts with the detected accelerator, an absolute USB pointer, and the
+   expected RTC mode.
 3. The guest reaches an Alpine login prompt on the serial console.
 4. A full VNC framebuffer is captured and contains non-black pixels.
-5. Pause and resume work through QMP.
-6. An online snapshot is created (memory-inclusive where supported, otherwise the
+5. Keyboard input sent over VNC reaches the guest: the test logs in and runs a
+   command that writes a marker to the serial port.
+6. Pause and resume work through QMP.
+7. An online snapshot is created (memory-inclusive where supported, otherwise the
    documented disk-only fallback).
-7. The VM is stopped, the snapshot is restored offline, and the VM boots again.
-8. The VM is exported and re-imported with checksum verification.
-9. The VM is cloned and all temporary VMs are removed.
+8. A running disk is grown and the new size is verified with `qemu-img` after
+   shutdown.
+9. The VM is stopped, the snapshot is restored offline, and the VM boots again.
+10. The VM is exported and re-imported with checksum verification.
+11. The VM is cloned and all temporary VMs are removed.
+12. A second test changes the CD-ROM medium on a running VM through QMP.
 
 Run it before releasing changes that touch process control, storage or the
 transfer format.

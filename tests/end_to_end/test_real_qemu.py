@@ -18,7 +18,7 @@ from openqvm.core.factory import create_vm_spec
 from openqvm.core.models import BootDevice, GuestOS, VMStatus
 from openqvm.core.validation import HostResources
 from openqvm.vm.qemu.medium import find_cdrom_device, medium_filename
-from openqvm.vm.rfb import RfbClient
+from openqvm.vm.rfb import RfbClient, type_text
 
 
 def _find_iso() -> Path | None:
@@ -88,6 +88,24 @@ def test_real_qemu_boot_snapshot_export(tmp_path):
             assert frame.width >= 640 and frame.height >= 400
             non_black = sum(1 for index in range(0, len(frame.rgb), 3) if frame.rgb[index : index + 3] != b"\x00\x00\x00")
             assert non_black > (frame.width * frame.height) // 100
+
+            # Prove that console input reaches the guest: log in over VNC and run
+            # a command that writes a marker to the serial console.
+            typed, unsupported = type_text(client, "root\n")
+            assert (typed, unsupported) == (5, 0)
+            time.sleep(3)
+            typed, unsupported = type_text(client, "echo OQVM_INPUT_OK > /dev/ttyS0\n")
+            assert unsupported == 0
+            deadline = time.monotonic() + 30
+            serial_text = ""
+            while time.monotonic() < deadline:
+                serial_text = context.manager.serial_log_path(vm_id).read_text(
+                    encoding="utf-8", errors="replace"
+                )
+                if "OQVM_INPUT_OK" in serial_text:
+                    break
+                time.sleep(0.5)
+            assert "OQVM_INPUT_OK" in serial_text
         finally:
             client.close()
 

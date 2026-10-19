@@ -119,6 +119,11 @@ def stylesheet(theme: str) -> str:
     }}
     QPushButton:hover {{ border-color: {palette.accent}; }}
     QPushButton:pressed {{ background-color: {palette.border}; }}
+    QPushButton:checked {{
+        background-color: {accent_soft};
+        border-color: {palette.accent};
+        color: {palette.text};
+    }}
     QPushButton:disabled {{ color: {palette.muted}; border-color: {palette.border}; }}
     QPushButton[variant="primary"] {{
         background-color: {palette.accent};

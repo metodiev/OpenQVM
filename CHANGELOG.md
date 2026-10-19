@@ -21,6 +21,11 @@ All notable changes to OpenQVM are documented here. The format follows
   available for explicit, documented overrides.
 - Integration and end-to-end coverage for the event bus, disk checks,
   event-driven refresh and live storage operations.
+- Guest compatibility and console input: an absolute USB tablet (no pointer
+  drift), RTC in local time for Windows guests and UTC for others, a
+  Ctrl+Alt+Del action and "type text" input that works without a guest agent.
+  The real-QEMU test logs in over VNC and executes a command to prove input
+  reaches the guest.
 
 ## [0.1.0] - 2026-10-19
 

@@ -9,7 +9,7 @@ from PySide6.QtGui import QColor, QImage, QKeyEvent, QMouseEvent, QPainter, QPai
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from openqvm.core.logging import get_logger
-from openqvm.vm.rfb import SPECIAL_KEYSYMS, RfbClient, RfbError, keysym_for_char
+from openqvm.vm.rfb import SPECIAL_KEYSYMS, RfbClient, RfbError, keysym_for_char, type_text
 
 log = get_logger("ui.vnc")
 
@@ -189,6 +189,36 @@ class VncWidget(QWidget):
 
     def reconnect(self) -> None:
         self.start()
+
+    def send_ctrl_alt_del(self) -> bool:
+        """Send Ctrl+Alt+Del to the guest.
+
+        Windows reserves this combination locally, so the console exposes it as
+        an explicit action.  Returns False when no display is connected.
+        """
+
+        worker = self._worker
+        if worker is None:
+            return False
+        keys = [SPECIAL_KEYSYMS["control"], SPECIAL_KEYSYMS["alt"], SPECIAL_KEYSYMS["delete"]]
+        for keysym in keys:
+            worker.send_key(keysym, True)
+        for keysym in reversed(keys):
+            worker.send_key(keysym, False)
+        return True
+
+    def send_text(self, text: str) -> tuple[int, int]:
+        """Type *text* into the guest using a US keyboard mapping.
+
+        Returns ``(typed, unsupported)`` counts.  This works without a guest
+        agent, unlike VNC clipboard transfer, because every character is sent as
+        ordinary key events.
+        """
+
+        worker = self._worker
+        if worker is None:
+            return 0, len(text)
+        return type_text(worker, text)
 
     def set_fit(self, fit: bool) -> None:
         self._fit = fit

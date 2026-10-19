@@ -209,3 +209,29 @@ def test_shared_folder_arguments(tmp_path):
     virtfs = argv_value(plan.argv, "-virtfs")
     assert "mount_tag=share" in virtfs
     assert "readonly=on" in virtfs
+
+
+def test_absolute_pointer_for_q35(tmp_path):
+    spec = create_vm_spec(name="Pointer VM", guest_os=GuestOS.LINUX, host=HOST)
+    assert spec.machine == "q35"
+    plan = make_plan(tmp_path, spec)
+    devices = [plan.argv[i + 1] for i, arg in enumerate(plan.argv) if arg == "-device"]
+    assert "qemu-xhci" in devices
+    assert "usb-tablet" in devices
+    assert "-usb" not in plan.argv
+
+
+def test_absolute_pointer_for_legacy_pc(tmp_path):
+    spec = create_vm_spec(name="Pointer PC", guest_os=GuestOS.WINDOWS_10, host=HOST)
+    assert spec.machine == "pc"
+    plan = make_plan(tmp_path, spec)
+    devices = [plan.argv[i + 1] for i, arg in enumerate(plan.argv) if arg == "-device"]
+    assert "usb-tablet" in devices
+    assert "-usb" in plan.argv
+
+
+def test_rtc_matches_guest_expectations(tmp_path):
+    linux = create_vm_spec(name="Linux RTC", guest_os=GuestOS.LINUX, host=HOST)
+    assert argv_value(make_plan(tmp_path, linux).argv, "-rtc") == "base=utc"
+    windows = create_vm_spec(name="Windows RTC", guest_os=GuestOS.WINDOWS_10, host=HOST)
+    assert argv_value(make_plan(tmp_path, windows).argv, "-rtc") == "base=localtime"

@@ -52,6 +52,7 @@ untested platforms are not claimed as verified.
 - [x] Host and per-VM metrics, operation history, `doctor` diagnostics
 - [x] Live ISO insert/replace/eject through QMP (media lock respected; `--force` opt-in)
 - [x] Live disk growth through QMP `block_resize`
+- [x] Console input: absolute USB pointer, Ctrl+Alt+Del, type-text without a guest agent
 - [ ] Bridged networking (requires privileged helper/bridge configuration)
 - [ ] Host-only networking
 - [ ] TPM 2.0 (swtpm integration)

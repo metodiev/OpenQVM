@@ -7,6 +7,7 @@ from PySide6.QtGui import QCloseEvent, QImage
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -99,11 +100,24 @@ class ConsoleWindow(QMainWindow):
         self.fit_button.setCheckable(True)
         self.fit_button.setChecked(self.context.settings.console_fit)
         self.fit_button.toggled.connect(self._set_fit)
+        self.cad_button = QPushButton("Ctrl+Alt+Del")
+        self.cad_button.setToolTip("Send Ctrl+Alt+Del to the guest (Windows login and lock screen)")
+        self.cad_button.clicked.connect(self._send_ctrl_alt_del)
+        self.paste_button = QPushButton("Type text…")
+        self.paste_button.setToolTip("Type clipboard text into the guest using a US keyboard layout")
+        self.paste_button.clicked.connect(self._type_text)
         self.screenshot_button = QPushButton("Save screenshot…")
         self.screenshot_button.clicked.connect(self._save_screenshot)
         folder_button = QPushButton("Open VM folder")
         folder_button.clicked.connect(lambda: open_folder(self.context.paths.vm_dir(self.vm_id)))
-        for button in (self.reconnect_button, self.fit_button, self.screenshot_button, folder_button):
+        for button in (
+            self.reconnect_button,
+            self.fit_button,
+            self.cad_button,
+            self.paste_button,
+            self.screenshot_button,
+            folder_button,
+        ):
             toolbar.addWidget(button)
         layout.addLayout(toolbar)
 
@@ -172,6 +186,29 @@ class ConsoleWindow(QMainWindow):
         if self._vnc is not None:
             self._vnc.set_fit(fit)
         self.context.update_settings(console_fit=fit)
+
+    def _send_ctrl_alt_del(self) -> None:
+        if self._vnc is None or not self._vnc.send_ctrl_alt_del():
+            self.statusBar().showMessage("Connect the display before sending Ctrl+Alt+Del.", 4000)
+            return
+        self.statusBar().showMessage("Sent Ctrl+Alt+Del to the guest.", 3000)
+
+    def _type_text(self) -> None:
+        if self._vnc is None:
+            self.statusBar().showMessage("Connect the display before typing text.", 4000)
+            return
+        text, ok = QInputDialog.getMultiLineText(
+            self,
+            "Type text into the guest",
+            "Text is typed as key events using a US keyboard layout:",
+        )
+        if not ok or not text:
+            return
+        typed, unsupported = self._vnc.send_text(text)
+        message = f"Typed {typed} character(s)."
+        if unsupported:
+            message += f" {unsupported} character(s) are not supported by the US layout map."
+        self.statusBar().showMessage(message, 6000)
 
     def _save_screenshot(self) -> None:
         image: QImage | None = self._vnc.screenshot() if self._vnc else None

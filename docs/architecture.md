@@ -115,7 +115,15 @@ QEMU exposes VNC on `127.0.0.1`. OpenQVM's RFB 3.8 client implements the `None`
 security type and Raw encoding, converts QEMU's BGRX framebuffer to RGB, and
 forwards keyboard/pointer events. Serial output is streamed from `serial.log`.
 The client is intentionally small and is covered by a fake-server unit test and
-by the real-QEMU e2e test, which captures a real framebuffer.
+by the real-QEMU e2e test, which captures a real framebuffer and proves keyboard
+input by logging in and running a command.
+
+The VM is launched with an absolute USB tablet (`qemu-xhci` on q35, `-usb` on the
+legacy pc machine) so VNC pointer coordinates map directly instead of drifting as
+with a relative PS/2 mouse. The console also offers Ctrl+Alt+Del (which Windows
+reserves on the host) and "type text", which sends ordinary key events using a US
+keyboard mapping and therefore works without a guest agent. The RTC uses
+`base=localtime` for Windows guests and `base=utc` for everything else.
 
 ### 3.6 Storage and snapshots
 

@@ -394,6 +394,92 @@ def keysym_for_char(character: str) -> int | None:
     return None
 
 
+# Characters that require Shift on a US keyboard, mapped to their base keysym.
+_SHIFTED_CHARACTERS = {
+    "!": "1",
+    "@": "2",
+    "#": "3",
+    "$": "4",
+    "%": "5",
+    "^": "6",
+    "&": "7",
+    "*": "8",
+    "(": "9",
+    ")": "0",
+    "_": "-",
+    "+": "=",
+    "{": "[",
+    "}": "]",
+    "|": "\\",
+    ":": ";",
+    '"': "'",
+    "<": ",",
+    ">": ".",
+    "?": "/",
+    "~": "`",
+}
+
+
+def keysym_for_text_char(character: str) -> tuple[int, bool] | None:
+    """Map a character to ``(keysym, needs_shift)`` for typing into a guest.
+
+    The mapping assumes a US keyboard layout, which is the layout QEMU's VNC
+    server uses for keysym translation.  Returns ``None`` for characters that
+    cannot be produced this way.
+    """
+
+    if len(character) != 1:
+        return None
+    if character == "\n" or character == "\r":
+        return SPECIAL_KEYSYMS["return"], False
+    if character == "\t":
+        return SPECIAL_KEYSYMS["tab"], False
+
+    shifted = _SHIFTED_CHARACTERS.get(character)
+    if shifted is not None:
+        return ord(shifted), True
+
+    if "a" <= character <= "z" or "0" <= character <= "9":
+        return ord(character), False
+    if "A" <= character <= "Z":
+        # QEMU's VNC server maps letter keysyms to their shifted keycode, so the
+        # uppercase keysym must be sent as-is; adding Shift would cancel it.
+        return ord(character), False
+    if character == " ":
+        return ord(" "), False
+    if character in "-=[]\\;',./`":
+        return ord(character), False
+    if 0xA0 <= ord(character) <= 0xFF:
+        return ord(character), False
+    return None
+
+
+def type_text(sender, text: str) -> tuple[int, int]:
+    """Type *text* through any object exposing ``send_key(keysym, down)``.
+
+    Returns ``(typed, unsupported)`` counts.  Used by the console widget and by
+    the end-to-end test so both exercise the same key mapping.
+    """
+
+    shift = SPECIAL_KEYSYMS["shift"]
+    typed = 0
+    unsupported = 0
+    for character in text:
+        mapping = keysym_for_text_char(character)
+        if mapping is None:
+            unsupported += 1
+            continue
+        keysym, needs_shift = mapping
+        if needs_shift:
+            sender.send_key(shift, True)
+        sender.send_key(keysym, True)
+        sender.send_key(keysym, False)
+        if needs_shift:
+            sender.send_key(shift, False)
+        typed += 1
+    return typed, unsupported
+
+
 def write_png(path: str, frame: FrameBuffer) -> None:
     """Write an RGB framebuffer as a PNG without external dependencies."""
 
