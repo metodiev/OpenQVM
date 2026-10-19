@@ -612,7 +612,10 @@ class VmManager:
 
             boot_order = list(spec.boot_order)
             if BootDevice.CDROM not in boot_order:
-                boot_order = [BootDevice.CDROM, *boot_order]
+                # Append rather than prepend: an ISO attached to an existing VM
+                # should not silently become the first boot device.  An empty or
+                # unbootable disk still falls through to the CD-ROM.
+                boot_order = [*boot_order, BootDevice.CDROM]
             candidate = replace(spec, cdrom_iso=str(info.path), boot_order=boot_order)
             self._raise_for_issues(candidate, exclude_vm_id=vm_id)
             busy = self._vm_busy(runtime)

@@ -322,6 +322,9 @@ def test_offline_iso_change_still_works(manager, tmp_path):
     updated = manager.attach_iso(spec.id, str(iso), live=True)
     assert updated.cdrom_iso == str(iso)
     assert manager.backend.medium_changes == []
+    assert updated.boot_order[0].value == "disk"
+    assert updated.boot_order[-1].value == "cdrom"
     ejected = manager.eject_iso(spec.id, live=True)
     assert ejected.cdrom_iso is None
+    assert all(device.value != "cdrom" for device in ejected.boot_order)
     assert manager.backend.medium_changes == []
