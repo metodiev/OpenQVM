@@ -28,7 +28,7 @@ def recommended_defaults(guest_os: GuestOS, host: HostResources) -> GuestDefault
         memory = 4096
         disk = 64 * 1024**3
         bus = DiskBus.IDE
-        machine = "pc"
+        machine = "q35"
         firmware = Firmware.UEFI
         nic = NicModel.E1000E
     elif guest_os is GuestOS.WINDOWS_10:

@@ -210,6 +210,24 @@ def detect_capabilities(*, qemu_dir: str | Path | None = None) -> PlatformCapabi
     if not raw_accels:
         raw_accels = ["kvm", "hvf", "whpx", "tcg"]
     accelerators = _accelerator_availability(raw_accels, features)
+    arch = host_platform.machine() or "unknown"
+    native_x86 = arch.lower() in {"x86_64", "amd64"}
+    if not native_x86:
+        # KVM/HVF/WHPX accelerate the host architecture, not an emulated x86_64
+        # guest.  Do not default to an accelerator that cannot run this guest.
+        adjusted: list[AcceleratorInfo] = []
+        for item in accelerators:
+            if item.name in {"kvm", "hvf", "whpx"}:
+                adjusted.append(
+                    AcceleratorInfo(
+                        name=item.name,
+                        available=False,
+                        detail=f"{item.name} accelerates native {arch} guests; x86_64 guests use TCG.",
+                    )
+                )
+            else:
+                adjusted.append(item)
+        accelerators = adjusted
     default = _preferred_accelerator(accelerators) if qemu else None
     uefi = _find_uefi(qemu)
 
@@ -227,10 +245,9 @@ def detect_capabilities(*, qemu_dir: str | Path | None = None) -> PlatformCapabi
             "or set the QEMU directory in Settings."
         )
     diagnostics.extend(features.diagnostics)
-    arch = host_platform.machine() or "unknown"
-    if arch.lower() not in {"x86_64", "amd64"}:
+    if not native_x86:
         diagnostics.append(
-            f"Host architecture is {arch}; x86_64 guests will run under software emulation or may not be supported."
+            f"Host architecture is {arch}; x86_64 guests run under software emulation (TCG)."
         )
 
     capabilities = PlatformCapabilities(
